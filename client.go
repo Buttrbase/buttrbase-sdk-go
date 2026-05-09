@@ -238,5 +238,163 @@ func (c *Client) PutSecret(ctx context.Context, orgUUID, name, value, descriptio
 	return &out, nil
 }
 
+// ===== Zero-trust endpoints =====
+
+// AuthStepUp exchanges an MFA TOTP (or recovery) code for a short-lived
+// elevated access token (~5 min). POST /api/auth/step-up.
+//
+// On success the client's APIKey is REPLACED with the returned access token
+// so subsequent admin / JIT calls carry the elevated session.
+func (c *Client) AuthStepUp(ctx context.Context, code string, recovery bool) (*StepUpResponse, error) {
+	body := map[string]any{"code": code, "recovery": recovery}
+	var out StepUpResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/step-up", body, true, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+// ----- JIT elevation (admin) — all require an active step-up session -----
+
+// ElevationRequest opens a JIT elevation grant.
+// POST /api/admin/orgs/{org}/elevation/request.
+func (c *Client) ElevationRequest(ctx context.Context, orgUUID, scope string, opts *ElevationRequestOptions) (*ElevationGrant, error) {
+	body := map[string]any{"scope": scope}
+	if opts != nil {
+		if opts.Reason != "" {
+			body["reason"] = opts.Reason
+		}
+		if opts.TTLSeconds != nil {
+			body["ttl_seconds"] = *opts.TTLSeconds
+		}
+	}
+	var out ElevationGrant
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/elevation/request"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ElevationApprove approves a pending JIT grant.
+// POST /api/admin/orgs/{org}/elevation/{grant}/approve.
+// The server returns 403 if the approver is the same admin as the requester.
+func (c *Client) ElevationApprove(ctx context.Context, orgUUID, grantUUID string) (*ElevationGrant, error) {
+	var out ElevationGrant
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/elevation/" + url.PathEscape(grantUUID) + "/approve"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ElevationList lists JIT grants for an org. Pass status="" to list all.
+// GET /api/admin/orgs/{org}/elevation.
+func (c *Client) ElevationList(ctx context.Context, orgUUID, status string) ([]ElevationGrant, error) {
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/elevation"
+	if status != "" {
+		path += "?status=" + url.QueryEscape(status)
+	}
+	var out []ElevationGrant
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SpiffeIssueSvid issues an X.509 SVID for a workload.
+// POST /api/admin/orgs/{org}/spiffe/svid.
+func (c *Client) SpiffeIssueSvid(ctx context.Context, orgUUID, workloadPath string, ttlSeconds *int64) (*SpiffeSvidResponse, error) {
+	body := map[string]any{"workload_path": workloadPath}
+	if ttlSeconds != nil {
+		body["ttl_seconds"] = *ttlSeconds
+	}
+	var out SpiffeSvidResponse
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/spiffe/svid"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListAuthEvents fetches the context-aware auth event log.
+// GET /api/admin/orgs/{org}/auth-events.
+func (c *Client) ListAuthEvents(ctx context.Context, orgUUID string, opts *ListAuthEventsOptions) ([]AuthEvent, error) {
+	limit := 50
+	userUUID := ""
+	if opts != nil {
+		if opts.Limit > 0 {
+			limit = opts.Limit
+		}
+		userUUID = opts.UserUUID
+	}
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit))
+	if userUUID != "" {
+		q.Set("user_uuid", userUUID)
+	}
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/auth-events?" + q.Encode()
+	var out []AuthEvent
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ReencryptSecrets rotates the KEK used for org secrets.
+// POST /api/admin/orgs/{org}/reencrypt/secrets.
+func (c *Client) ReencryptSecrets(ctx context.Context, orgUUID string) (*ReencryptResponse, error) {
+	return c.reencrypt(ctx, orgUUID, "secrets")
+}
+
+// ReencryptSigningKeys rotates the KEK used for org signing keys.
+// POST /api/admin/orgs/{org}/reencrypt/signing-keys.
+func (c *Client) ReencryptSigningKeys(ctx context.Context, orgUUID string) (*ReencryptResponse, error) {
+	return c.reencrypt(ctx, orgUUID, "signing-keys")
+}
+
+// ReencryptMtlsCa rotates the KEK used for the org mTLS CA.
+// POST /api/admin/orgs/{org}/reencrypt/mtls-ca.
+func (c *Client) ReencryptMtlsCa(ctx context.Context, orgUUID string) (*ReencryptResponse, error) {
+	return c.reencrypt(ctx, orgUUID, "mtls-ca")
+}
+
+func (c *Client) reencrypt(ctx context.Context, orgUUID, kind string) (*ReencryptResponse, error) {
+	var out ReencryptResponse
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/reencrypt/" + kind
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RevokeSession adds a session JTI to the revocation list.
+// POST /api/admin/sessions/revoke.
+func (c *Client) RevokeSession(ctx context.Context, jti string, ttlSeconds *int64) (*RevokeSessionResponse, error) {
+	body := map[string]any{"jti": jti}
+	if ttlSeconds != nil {
+		body["ttl_seconds"] = *ttlSeconds
+	}
+	var out RevokeSessionResponse
+	if err := c.do(ctx, http.MethodPost, "/api/admin/sessions/revoke", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetOrgMetrics fetches per-org metrics.
+// GET /api/admin/orgs/{org}/metrics.
+func (c *Client) GetOrgMetrics(ctx context.Context, orgUUID string) (*OrgMetrics, error) {
+	var out OrgMetrics
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/metrics"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ensure strconv stays used (helper for callers building queries).
 var _ = strconv.Itoa

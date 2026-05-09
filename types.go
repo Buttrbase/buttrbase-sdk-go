@@ -105,3 +105,84 @@ type SecretSummary struct {
 	Description string `json:"description,omitempty"`
 	Raw         map[string]any `json:"-"`
 }
+
+// ----- Zero-trust endpoints -----
+
+// StepUpResponse is the response from AuthStepUp.
+type StepUpResponse struct {
+	AccessToken      string `json:"access_token"`
+	TokenType        string `json:"token_type"`
+	ExpiresInSeconds int64  `json:"expires_in_seconds"`
+}
+
+// ElevationRequestOptions holds optional parameters for ElevationRequest.
+type ElevationRequestOptions struct {
+	Reason     string
+	TTLSeconds *int64
+}
+
+// ElevationGrant is the grant view returned by elevation endpoints.
+type ElevationGrant struct {
+	GrantUUID     string `json:"grant_uuid"`
+	OrgUUID       string `json:"org_uuid"`
+	RequesterUUID string `json:"requester_uuid"`
+	ApproverUUID  string `json:"approver_uuid,omitempty"`
+	Scope         string `json:"scope"`
+	Reason        string `json:"reason,omitempty"`
+	Status        string `json:"status"`
+	TTLSeconds    int64  `json:"ttl_seconds,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	ApprovedAt    string `json:"approved_at,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+}
+
+// SpiffeSvidResponse is the response from SpiffeIssueSvid.
+type SpiffeSvidResponse struct {
+	SpiffeID      string `json:"spiffe_id"`
+	SvidPEM       string `json:"svid_pem"`
+	PrivateKeyPEM string `json:"private_key_pem"`
+	IssuedAt      string `json:"issued_at"`
+	ExpiresAt     string `json:"expires_at"`
+}
+
+// AuthEvent is one entry in the context-aware auth event log.
+type AuthEvent struct {
+	EventUUID  string  `json:"event_uuid,omitempty"`
+	OrgUUID    string  `json:"org_uuid,omitempty"`
+	UserUUID   string  `json:"user_uuid,omitempty"`
+	Kind       string  `json:"kind"`
+	IP         string  `json:"ip,omitempty"`
+	UserAgent  string  `json:"user_agent,omitempty"`
+	RiskScore  float64 `json:"risk_score,omitempty"`
+	OccurredAt string  `json:"occurred_at"`
+}
+
+// ListAuthEventsOptions holds optional parameters for ListAuthEvents.
+type ListAuthEventsOptions struct {
+	UserUUID string
+	Limit    int
+}
+
+// ReencryptResponse is the response from the reencrypt admin endpoints.
+type ReencryptResponse struct {
+	Rotated  int64  `json:"rotated"`
+	Failed   int64  `json:"failed,omitempty"`
+	NewKEKID string `json:"new_kek_id,omitempty"`
+}
+
+// RevokeSessionResponse is the response from RevokeSession.
+type RevokeSessionResponse struct {
+	JTI       string `json:"jti"`
+	Revoked   bool   `json:"revoked"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// OrgMetrics is the response from GetOrgMetrics.
+type OrgMetrics struct {
+	ActiveUsers       int64 `json:"active_users,omitempty"`
+	ActiveSessions    int64 `json:"active_sessions,omitempty"`
+	PendingElevations int64 `json:"pending_elevations,omitempty"`
+	SecretsCount      int64 `json:"secrets_count,omitempty"`
+	SigningKeysCount  int64 `json:"signing_keys_count,omitempty"`
+	Raw               map[string]any `json:"-"`
+}
