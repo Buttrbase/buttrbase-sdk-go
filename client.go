@@ -1,0 +1,1646 @@
+// Package buttrbase is a Go SDK for the Buttrbase API.
+package buttrbase
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
+)
+
+const defaultBaseURL = "https://api.buttrbase.com"
+
+// Client is the Buttrbase API client.
+type Client struct {
+	BaseURL    string
+	APIKey     string
+	HTTPClient *http.Client
+}
+
+// Option configures a Client.
+type Option func(*Client)
+
+// WithBaseURL overrides the API base URL.
+func WithBaseURL(u string) Option { return func(c *Client) { c.BaseURL = u } }
+
+// WithHTTPClient overrides the HTTP client.
+func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.HTTPClient = h } }
+
+// New creates a new Client.
+func New(apiKey string, opts ...Option) *Client {
+	c := &Client{
+		BaseURL:    defaultBaseURL,
+		APIKey:     apiKey,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any, auth bool, out any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	u := c.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	if auth && c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := ""
+		var parsed map[string]any
+		if json.Unmarshal(respBody, &parsed) == nil {
+			if d, ok := parsed["detail"].(string); ok {
+				detail = d
+			}
+		}
+		return &ButtrbaseError{StatusCode: resp.StatusCode, Detail: detail, Body: respBody}
+	}
+	if out != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("buttrbase: decode response: %w", err)
+		}
+	}
+	return nil
+}
+
+// ButtrbaseError is returned when the API responds with a non-2xx status.
+type ButtrbaseError struct {
+	StatusCode int
+	Detail     string
+	Body       []byte
+}
+
+func (e *ButtrbaseError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("buttrbase: HTTP %d: %s", e.StatusCode, e.Detail)
+	}
+	return fmt.Sprintf("buttrbase: HTTP %d", e.StatusCode)
+}
+
+// ----- Coupons -----
+
+func (c *Client) ValidateCoupon(ctx context.Context, code string, opts *ValidateCouponOptions) (*CouponValidation, error) {
+	body := map[string]any{"code": code}
+	if opts != nil {
+		if opts.UserID != nil {
+			body["user_id"] = *opts.UserID
+		}
+		if opts.OrderTotalCents != nil {
+			body["order_total_cents"] = *opts.OrderTotalCents
+		}
+	}
+	var out CouponValidation
+	if err := c.do(ctx, http.MethodPost, "/v1/coupons/validate", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Gift cards -----
+
+func (c *Client) ValidateGiftCard(ctx context.Context, code string) (*GiftCardValidation, error) {
+	body := map[string]any{"code": code}
+	var out GiftCardValidation
+	if err := c.do(ctx, http.MethodPost, "/v1/giftcards/validate", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RedeemGiftCard(ctx context.Context, code string, amountCents int64, userID *int) (*GiftCardRedemption, error) {
+	body := map[string]any{"code": code, "amount_cents": amountCents}
+	if userID != nil {
+		body["user_id"] = *userID
+	}
+	var out GiftCardRedemption
+	if err := c.do(ctx, http.MethodPost, "/v1/giftcards/redeem", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Magic link -----
+
+func (c *Client) SendMagicLink(ctx context.Context, email string, opts *SendMagicLinkOptions) (*MagicLinkSend, error) {
+	body := map[string]any{"email": email}
+	if opts != nil {
+		if opts.RedirectURL != "" {
+			body["redirect_url"] = opts.RedirectURL
+		}
+		if opts.TTLSeconds != nil {
+			body["ttl_seconds"] = *opts.TTLSeconds
+		}
+	}
+	var out MagicLinkSend
+	if err := c.do(ctx, http.MethodPost, "/v1/magic-link/send", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) VerifyMagicLink(ctx context.Context, token string) (*MagicLinkVerify, error) {
+	body := map[string]any{"token": token}
+	var out MagicLinkVerify
+	if err := c.do(ctx, http.MethodPost, "/v1/magic-link/verify", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- MFA -----
+
+func (c *Client) MfaStatus(ctx context.Context) (*MfaStatus, error) {
+	var out MfaStatus
+	if err := c.do(ctx, http.MethodGet, "/v1/mfa/status", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) MfaEnroll(ctx context.Context, label string) (*MfaEnrollment, error) {
+	body := map[string]any{"label": label}
+	var out MfaEnrollment
+	if err := c.do(ctx, http.MethodPost, "/v1/mfa/enroll", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) MfaActivate(ctx context.Context, code string) (*MfaStatusResponse, error) {
+	body := map[string]any{"code": code}
+	var out MfaStatusResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/mfa/activate", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Org signing -----
+
+func (c *Client) OrgSign(ctx context.Context, orgUUID string, claims map[string]any, ttlSeconds *int64) (*OrgSignResponse, error) {
+	body := map[string]any{"claims": claims}
+	if ttlSeconds != nil {
+		body["ttl_seconds"] = *ttlSeconds
+	}
+	var out OrgSignResponse
+	path := "/v1/orgs/" + url.PathEscape(orgUUID) + "/sign"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) OrgJWKS(ctx context.Context, orgUUID string) (*JWKSResponse, error) {
+	var out JWKSResponse
+	path := "/v1/orgs/" + url.PathEscape(orgUUID) + "/.well-known/jwks.json"
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Secrets -----
+
+func (c *Client) GetSecret(ctx context.Context, orgUUID, name string) (*SecretGet, error) {
+	var out SecretGet
+	path := "/v1/orgs/" + url.PathEscape(orgUUID) + "/secrets/" + url.PathEscape(name)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) PutSecret(ctx context.Context, orgUUID, name, value, description string) (*SecretSummary, error) {
+	body := map[string]any{"value": value}
+	if description != "" {
+		body["description"] = description
+	}
+	var out SecretSummary
+	path := "/v1/orgs/" + url.PathEscape(orgUUID) + "/secrets/" + url.PathEscape(name)
+	if err := c.do(ctx, http.MethodPut, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ===== Zero-trust endpoints =====
+
+func (c *Client) AuthStepUp(ctx context.Context, code string, recovery bool) (*StepUpResponse, error) {
+	body := map[string]any{"code": code, "recovery": recovery}
+	var out StepUpResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/step-up", body, true, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) ElevationRequest(ctx context.Context, orgUUID, scope string, opts *ElevationRequestOptions) (*ElevationGrant, error) {
+	body := map[string]any{"scope": scope}
+	if opts != nil {
+		if opts.Reason != "" {
+			body["reason"] = opts.Reason
+		}
+		if opts.TTLSeconds != nil {
+			body["ttl_seconds"] = *opts.TTLSeconds
+		}
+	}
+	var out ElevationGrant
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/elevation/request"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ElevationApprove(ctx context.Context, orgUUID, grantUUID string) (*ElevationGrant, error) {
+	var out ElevationGrant
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/elevation/" + url.PathEscape(grantUUID) + "/approve"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ElevationList(ctx context.Context, orgUUID, status string) ([]ElevationGrant, error) {
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/elevation"
+	if status != "" {
+		path += "?status=" + url.QueryEscape(status)
+	}
+	var out []ElevationGrant
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SpiffeIssueSvid(ctx context.Context, orgUUID, workloadPath string, ttlSeconds *int64) (*SpiffeSvidResponse, error) {
+	body := map[string]any{"workload_path": workloadPath}
+	if ttlSeconds != nil {
+		body["ttl_seconds"] = *ttlSeconds
+	}
+	var out SpiffeSvidResponse
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/spiffe/svid"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ListAuthEvents(ctx context.Context, orgUUID string, opts *ListAuthEventsOptions) ([]AuthEvent, error) {
+	limit := 50
+	userUUID := ""
+	if opts != nil {
+		if opts.Limit > 0 {
+			limit = opts.Limit
+		}
+		userUUID = opts.UserUUID
+	}
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit))
+	if userUUID != "" {
+		q.Set("user_uuid", userUUID)
+	}
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/auth-events?" + q.Encode()
+	var out []AuthEvent
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ReencryptSecrets(ctx context.Context, orgUUID string) (*ReencryptResponse, error) {
+	return c.reencrypt(ctx, orgUUID, "secrets")
+}
+
+func (c *Client) ReencryptSigningKeys(ctx context.Context, orgUUID string) (*ReencryptResponse, error) {
+	return c.reencrypt(ctx, orgUUID, "signing-keys")
+}
+
+func (c *Client) ReencryptMtlsCa(ctx context.Context, orgUUID string) (*ReencryptResponse, error) {
+	return c.reencrypt(ctx, orgUUID, "mtls-ca")
+}
+
+func (c *Client) reencrypt(ctx context.Context, orgUUID, kind string) (*ReencryptResponse, error) {
+	var out ReencryptResponse
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/reencrypt/" + kind
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RevokeSession(ctx context.Context, jti string, ttlSeconds *int64) (*RevokeSessionResponse, error) {
+	body := map[string]any{"jti": jti}
+	if ttlSeconds != nil {
+		body["ttl_seconds"] = *ttlSeconds
+	}
+	var out RevokeSessionResponse
+	if err := c.do(ctx, http.MethodPost, "/api/admin/sessions/revoke", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetOrgMetrics(ctx context.Context, orgUUID string) (*OrgMetrics, error) {
+	var out OrgMetrics
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/metrics"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ListCredentials(ctx context.Context) (*CredentialList, error) {
+	var out CredentialList
+	if err := c.do(ctx, http.MethodGet, "/credentials", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) CreateCredential(ctx context.Context, req CreateCredentialRequest) (*Credential, error) {
+	var out Credential
+	if err := c.do(ctx, http.MethodPost, "/credentials", req, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetCredential(ctx context.Context, credentialsID string) (*Credential, error) {
+	var out Credential
+	path := "/credentials/" + url.PathEscape(credentialsID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteCredential(ctx context.Context, credentialsID string) error {
+	path := "/credentials/" + url.PathEscape(credentialsID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) RotateCredentialSecret(ctx context.Context, credentialsID string) (*RotateSecretResponse, error) {
+	var out RotateSecretResponse
+	path := "/credentials/" + url.PathEscape(credentialsID) + "/rotate-secret"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ResetSandbox(ctx context.Context, req *SandboxResetRequest) (*SandboxResetResponse, error) {
+	var body any
+	if req != nil {
+		body = req
+	}
+	var out SandboxResetResponse
+	if err := c.do(ctx, http.MethodPost, "/api/sandbox/reset", body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) Register(ctx context.Context, email, password, orgName string, opts *RegisterOptions) (*LoginResponse, error) {
+	body := map[string]any{"email": email, "password": password, "org_name": orgName}
+	if opts != nil {
+		if opts.FirstName != "" {
+			body["first_name"] = opts.FirstName
+		}
+		if opts.LastName != "" {
+			body["last_name"] = opts.LastName
+		}
+	}
+	var out LoginResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/register", body, false, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) Login(ctx context.Context, email, password, orgName string) (*LoginResponse, error) {
+	body := map[string]any{"email": email, "password": password, "org_name": orgName}
+	var out LoginResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/login", body, false, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) GetLoginOptions(ctx context.Context, orgUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/auth/organizations/" + url.PathEscape(orgUUID) + "/login-options"
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetStatus(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/auth/status", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
+	var out Profile
+	if err := c.do(ctx, http.MethodGet, "/api/profile", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateProfile(ctx context.Context, data map[string]any) (*Profile, error) {
+	var out Profile
+	if err := c.do(ctx, http.MethodPut, "/api/profile", data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetOrgByDomain(ctx context.Context, domain string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/auth/orgs-by-domain/" + url.PathEscape(domain)
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) OtpSend(ctx context.Context, phone string) (map[string]any, error) {
+	body := map[string]any{"phone": phone}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/auth/otp/send", body, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) OtpVerify(ctx context.Context, phone, code string) (*LoginResponse, error) {
+	body := map[string]any{"phone": phone, "code": code}
+	var out LoginResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/otp/verify", body, false, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) MfaVerify(ctx context.Context, code string) (map[string]any, error) {
+	body := map[string]any{"code": code}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/auth/mfa/totp/verify", body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) MfaChallenge(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/auth/mfa/totp/challenge", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) MfaDisable(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodDelete, "/api/auth/mfa/totp", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) MfaGenerateRecoveryCodes(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/auth/mfa/recovery-codes", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) MfaRedeemRecoveryCode(ctx context.Context, code string) (map[string]any, error) {
+	body := map[string]any{"code": code}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/auth/mfa/recovery-codes/redeem", body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) OidcAuthorizeURL(ctx context.Context, connectionUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/auth/sso/oidc/" + url.PathEscape(connectionUUID) + "/authorize"
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SamlAuthorizeURL(ctx context.Context, connectionUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/auth/sso/saml/" + url.PathEscape(connectionUUID) + "/authorize"
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) OidcCallback(ctx context.Context, connectionUUID string, params map[string]any) (*LoginResponse, error) {
+	var out LoginResponse
+	path := "/api/auth/sso/oidc/" + url.PathEscape(connectionUUID) + "/callback"
+	if err := c.do(ctx, http.MethodPost, path, params, false, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) SamlCallback(ctx context.Context, connectionUUID string, params map[string]any) (*LoginResponse, error) {
+	var out LoginResponse
+	path := "/api/auth/sso/saml/" + url.PathEscape(connectionUUID) + "/callback"
+	if err := c.do(ctx, http.MethodPost, path, params, false, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) ListUsers(ctx context.Context, filters map[string]string) ([]map[string]any, error) {
+	path := "/api/users"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out []map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetUser(ctx context.Context, userUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/users/" + url.PathEscape(userUUID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetUserLevel(ctx context.Context, userUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/users/" + url.PathEscape(userUUID) + "/level"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetUserLevel(ctx context.Context, userUUID, userType string) (map[string]any, error) {
+	body := map[string]any{"user_type": userType}
+	var out map[string]any
+	path := "/api/users/" + url.PathEscape(userUUID) + "/level"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateUserStatus(ctx context.Context, userUUID string, active bool) (map[string]any, error) {
+	body := map[string]any{"active": active}
+	var out map[string]any
+	path := "/api/users/" + url.PathEscape(userUUID) + "/status"
+	if err := c.do(ctx, http.MethodPut, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateUserRole(ctx context.Context, userUUID, role string) (map[string]any, error) {
+	body := map[string]any{"role": role}
+	var out map[string]any
+	path := "/api/users/" + url.PathEscape(userUUID) + "/role"
+	if err := c.do(ctx, http.MethodPut, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteUser(ctx context.Context, userUUID string) error {
+	path := "/api/users/" + url.PathEscape(userUUID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) GetOrgSecuritySettings(ctx context.Context, orgUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/security"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateOrgSecuritySettings(ctx context.Context, orgUUID string, settings map[string]any) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/security"
+	if err := c.do(ctx, http.MethodPut, path, settings, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListSsoConnections(ctx context.Context, orgUUID string) ([]SsoConnection, error) {
+	var out []SsoConnection
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/sso/connections"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateSsoConnection(ctx context.Context, orgUUID string, data map[string]any) (*SsoConnection, error) {
+	var out SsoConnection
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/sso/connections"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetSsoConnection(ctx context.Context, orgUUID, connectionUUID string) (*SsoConnection, error) {
+	var out SsoConnection
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/sso/connections/" + url.PathEscape(connectionUUID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateSsoConnection(ctx context.Context, orgUUID, connectionUUID string, data map[string]any) (*SsoConnection, error) {
+	var out SsoConnection
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/sso/connections/" + url.PathEscape(connectionUUID)
+	if err := c.do(ctx, http.MethodPut, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteSsoConnection(ctx context.Context, orgUUID, connectionUUID string) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/sso/connections/" + url.PathEscape(connectionUUID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListAuditEvents(ctx context.Context, orgUUID string, filters map[string]string) ([]AuditEventEntry, error) {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/audit-events"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out []AuditEventEntry
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetAuditEvent(ctx context.Context, orgUUID string, eventID int64) (*AuditEventEntry, error) {
+	var out AuditEventEntry
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/audit-events/" + strconv.FormatInt(eventID, 10)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetBranding(ctx context.Context, orgUUID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/branding"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateBranding(ctx context.Context, orgUUID string, branding map[string]any) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/branding"
+	if err := c.do(ctx, http.MethodPut, path, branding, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListDeviceAccounts(ctx context.Context, deviceUUID string) ([]UserAccount, error) {
+	path := "/api/device-accounts"
+	if deviceUUID != "" {
+		path += "?device_uuid=" + url.QueryEscape(deviceUUID)
+	}
+	var out []UserAccount
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateDeviceAccount(ctx context.Context, data map[string]any) (*UserAccount, error) {
+	var out UserAccount
+	if err := c.do(ctx, http.MethodPost, "/api/device-accounts", data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetDeviceAccount(ctx context.Context, accountUUID string) (*UserAccount, error) {
+	var out UserAccount
+	path := "/api/device-accounts/" + url.PathEscape(accountUUID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteDeviceAccount(ctx context.Context, accountUUID string) error {
+	path := "/api/device-accounts/" + url.PathEscape(accountUUID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListSessions(ctx context.Context) ([]SessionInfo, error) {
+	var out []SessionInfo
+	if err := c.do(ctx, http.MethodGet, "/api/sessions", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetSession(ctx context.Context, sessionID string) (*SessionInfo, error) {
+	var out SessionInfo
+	path := "/api/sessions/" + url.PathEscape(sessionID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RevokeSessionByID(ctx context.Context, sessionID string) error {
+	path := "/api/sessions/" + url.PathEscape(sessionID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) RevokeAllSessions(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/sessions/revoke-all", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListAPIKeysV2(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/v2/api-keys", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateAPIKeyV2(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/v2/api-keys", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteAPIKeyV2(ctx context.Context, keyID string) error {
+	path := "/api/v2/api-keys/" + url.PathEscape(keyID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListServiceIdentities(ctx context.Context, orgUUID string) ([]map[string]any, error) {
+	var out []map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/service-identities"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateServiceIdentity(ctx context.Context, orgUUID string, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/service-identities"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetServiceIdentity(ctx context.Context, orgUUID, identityID string) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/service-identities/" + url.PathEscape(identityID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateServiceIdentity(ctx context.Context, orgUUID, identityID string, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/service-identities/" + url.PathEscape(identityID)
+	if err := c.do(ctx, http.MethodPut, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteServiceIdentity(ctx context.Context, orgUUID, identityID string) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/service-identities/" + url.PathEscape(identityID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) CreateServiceIdentityToken(ctx context.Context, orgUUID, identityID string, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/service-identities/" + url.PathEscape(identityID) + "/token"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CheckEntitlement(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/entitlements/check", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) BatchCheckEntitlements(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/entitlements/batch-check", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetEffectiveEntitlements(ctx context.Context, filters map[string]string) (map[string]any, error) {
+	path := "/api/entitlements/effective"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) AdminExplainEntitlement(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/admin/entitlements/explain", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PricingPreview(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/pricing/preview", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PricingQuote(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/pricing/quote", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PricingCheckoutSession(ctx context.Context, data map[string]any) (*PaymentCheckoutSession, error) {
+	var out PaymentCheckoutSession
+	if err := c.do(ctx, http.MethodPost, "/api/pricing/checkout-session", data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) AdminExplainPricing(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/admin/pricing/explain", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PricingCatalogPreview(ctx context.Context, filters map[string]string) (map[string]any, error) {
+	path := "/api/pricing/catalog"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListCoupons(ctx context.Context, productID int) ([]Coupon, error) {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons"
+	var out []Coupon
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateCoupon(ctx context.Context, productID int, data map[string]any) (*Coupon, error) {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons"
+	var out Coupon
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetCoupon(ctx context.Context, productID, couponID int) (*Coupon, error) {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons/" + strconv.Itoa(couponID)
+	var out Coupon
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateCoupon(ctx context.Context, productID, couponID int, data map[string]any) (*Coupon, error) {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons/" + strconv.Itoa(couponID)
+	var out Coupon
+	if err := c.do(ctx, http.MethodPut, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteCoupon(ctx context.Context, productID, couponID int) error {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons/" + strconv.Itoa(couponID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) SetCouponLabels(ctx context.Context, productID, couponID int, labels []string) (map[string]any, error) {
+	body := map[string]any{"labels": labels}
+	var out map[string]any
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons/" + strconv.Itoa(couponID) + "/labels"
+	if err := c.do(ctx, http.MethodPut, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) AddCouponLabel(ctx context.Context, productID, couponID int, label string) (map[string]any, error) {
+	body := map[string]any{"label": label}
+	var out map[string]any
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons/" + strconv.Itoa(couponID) + "/labels"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RemoveCouponLabel(ctx context.Context, productID, couponID int, label string) error {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/coupons/" + strconv.Itoa(couponID) + "/labels/" + url.PathEscape(label)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) SetProductTags(ctx context.Context, productID int, tags []string) (map[string]any, error) {
+	body := map[string]any{"tags": tags}
+	var out map[string]any
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/tags"
+	if err := c.do(ctx, http.MethodPut, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) AddProductTag(ctx context.Context, productID int, tag string) (map[string]any, error) {
+	body := map[string]any{"tag": tag}
+	var out map[string]any
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/tags"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RemoveProductTag(ctx context.Context, productID int, tag string) error {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/tags/" + url.PathEscape(tag)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) IngestAnalyticsEvent(ctx context.Context, data map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/analytics/events", data, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetAppOverview(ctx context.Context, filters map[string]string) (map[string]any, error) {
+	path := "/api/analytics/app-overview"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetOrgOverview(ctx context.Context, orgUUID string, filters map[string]string) (map[string]any, error) {
+	q := url.Values{}
+	q.Set("org_uuid", orgUUID)
+	for k, v := range filters {
+		q.Set(k, v)
+	}
+	path := "/api/analytics/org-overview?" + q.Encode()
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetUserOverview(ctx context.Context, userUUID string, filters map[string]string) (map[string]any, error) {
+	q := url.Values{}
+	q.Set("user_uuid", userUUID)
+	for k, v := range filters {
+		q.Set(k, v)
+	}
+	path := "/api/analytics/user-overview?" + q.Encode()
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetFunnelAnalytics(ctx context.Context, filters map[string]string) (map[string]any, error) {
+	path := "/api/analytics/funnel"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetRetentionAnalytics(ctx context.Context, filters map[string]string) (map[string]any, error) {
+	path := "/api/analytics/retention"
+	if len(filters) > 0 {
+		q := url.Values{}
+		for k, v := range filters {
+			q.Set(k, v)
+		}
+		path += "?" + q.Encode()
+	}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListBillingInvoices(ctx context.Context) ([]Invoice, error) {
+	var out []Invoice
+	if err := c.do(ctx, http.MethodGet, "/api/billing/invoices", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetBillingInvoice(ctx context.Context, invoiceID int) (*Invoice, error) {
+	var out Invoice
+	path := "/api/billing/invoices/" + strconv.Itoa(invoiceID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) BillingCheckout(ctx context.Context, data map[string]any) (*CheckoutResponse, error) {
+	var out CheckoutResponse
+	if err := c.do(ctx, http.MethodPost, "/api/billing/checkout", data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetBillingPortal(ctx context.Context) (*CheckoutResponse, error) {
+	var out CheckoutResponse
+	if err := c.do(ctx, http.MethodGet, "/api/billing/portal", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) SendInvoice(ctx context.Context, data map[string]any) (*SendInvoiceResponse, error) {
+	var out SendInvoiceResponse
+	if err := c.do(ctx, http.MethodPost, "/api/billing/send-invoice", data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ListSigningKeys(ctx context.Context, orgUUID string) ([]SigningKey, error) {
+	var out []SigningKey
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/signing-keys"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateSigningKey(ctx context.Context, orgUUID string, data map[string]any) (*SigningKey, error) {
+	var out SigningKey
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/signing-keys"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetSigningKey(ctx context.Context, orgUUID, keyID string) (*SigningKey, error) {
+	var out SigningKey
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/signing-keys/" + url.PathEscape(keyID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RevokeSigningKey(ctx context.Context, orgUUID, keyID string) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/signing-keys/" + url.PathEscape(keyID) + "/revoke"
+	return c.do(ctx, http.MethodPost, path, nil, true, nil)
+}
+
+func (c *Client) ListSigningAudit(ctx context.Context, orgUUID string) ([]SigningAuditEntryItem, error) {
+	var out []SigningAuditEntryItem
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/signing-keys/audit"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetMtlsCa(ctx context.Context, orgUUID string) (*CertificateAuthority, error) {
+	var out CertificateAuthority
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/mtls/ca"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) CreateMtlsCa(ctx context.Context, orgUUID string) (*CertificateAuthority, error) {
+	var out CertificateAuthority
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/mtls/ca"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) IssueMtlsCert(ctx context.Context, orgUUID string, data map[string]any) (*Certificate, error) {
+	var out Certificate
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/mtls/issue"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ListMtlsCerts(ctx context.Context, orgUUID string) ([]Certificate, error) {
+	var out []Certificate
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/mtls/certificates"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RevokeMtlsCert(ctx context.Context, orgUUID, serial string) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/mtls/certificates/" + url.PathEscape(serial) + "/revoke"
+	return c.do(ctx, http.MethodPost, path, nil, true, nil)
+}
+
+func (c *Client) ListDomains(ctx context.Context, orgUUID string) ([]Domain, error) {
+	var out []Domain
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/domains"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) AddDomain(ctx context.Context, orgUUID, domain string) (*Domain, error) {
+	body := map[string]any{"domain": domain}
+	var out Domain
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/domains"
+	if err := c.do(ctx, http.MethodPost, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) VerifyDomain(ctx context.Context, orgUUID string, domainID int) (*Domain, error) {
+	var out Domain
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/domains/" + strconv.Itoa(domainID) + "/verify"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RemoveDomain(ctx context.Context, orgUUID string, domainID int) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/domains/" + strconv.Itoa(domainID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListWebhookEndpoints(ctx context.Context, orgUUID string) ([]WebhookEndpoint, error) {
+	var out []WebhookEndpoint
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateWebhookEndpoint(ctx context.Context, orgUUID string, data map[string]any) (*WebhookEndpoint, error) {
+	var out WebhookEndpoint
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetWebhookEndpoint(ctx context.Context, orgUUID string, endpointID int) (*WebhookEndpoint, error) {
+	var out WebhookEndpoint
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks/" + strconv.Itoa(endpointID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateWebhookEndpoint(ctx context.Context, orgUUID string, endpointID int, data map[string]any) (*WebhookEndpoint, error) {
+	var out WebhookEndpoint
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks/" + strconv.Itoa(endpointID)
+	if err := c.do(ctx, http.MethodPut, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteWebhookEndpoint(ctx context.Context, orgUUID string, endpointID int) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks/" + strconv.Itoa(endpointID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListWebhookDeliveries(ctx context.Context, orgUUID string, endpointID int) ([]WebhookDelivery, error) {
+	var out []WebhookDelivery
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks/" + strconv.Itoa(endpointID) + "/deliveries"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetAdminPortalToken(ctx context.Context, orgUUID string) (*AdminPortalToken, error) {
+	var out AdminPortalToken
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/admin-portal/issue"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ListOrgFeatures(ctx context.Context, orgUUID string) ([]OrgFeature, error) {
+	var out []OrgFeature
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/features"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetOrgFeature(ctx context.Context, orgUUID, featureID string, enabled bool) (*OrgFeature, error) {
+	body := map[string]any{"enabled": enabled}
+	var out OrgFeature
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/features/" + url.PathEscape(featureID)
+	if err := c.do(ctx, http.MethodPut, path, body, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ListPermissions(ctx context.Context, productID int) ([]Permission, error) {
+	var out []Permission
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/permissions"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreatePermission(ctx context.Context, productID int, data map[string]any) (*Permission, error) {
+	var out Permission
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/permissions"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetPermission(ctx context.Context, productID, permissionID int) (*Permission, error) {
+	var out Permission
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/permissions/" + strconv.Itoa(permissionID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdatePermission(ctx context.Context, productID, permissionID int, data map[string]any) (*Permission, error) {
+	var out Permission
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/permissions/" + strconv.Itoa(permissionID)
+	if err := c.do(ctx, http.MethodPut, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeletePermission(ctx context.Context, productID, permissionID int) error {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/permissions/" + strconv.Itoa(permissionID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListRoles(ctx context.Context, productID int) ([]Role, error) {
+	var out []Role
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateRole(ctx context.Context, productID int, data map[string]any) (*Role, error) {
+	var out Role
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetRole(ctx context.Context, productID, roleID int) (*Role, error) {
+	var out Role
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles/" + strconv.Itoa(roleID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateRole(ctx context.Context, productID, roleID int, data map[string]any) (*Role, error) {
+	var out Role
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles/" + strconv.Itoa(roleID)
+	if err := c.do(ctx, http.MethodPut, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteRole(ctx context.Context, productID, roleID int) error {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles/" + strconv.Itoa(roleID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) AssignRolePermission(ctx context.Context, productID, roleID, permissionID int) error {
+	body := map[string]any{"permission_id": permissionID}
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles/" + strconv.Itoa(roleID) + "/permissions"
+	return c.do(ctx, http.MethodPost, path, body, true, nil)
+}
+
+func (c *Client) RemoveRolePermission(ctx context.Context, productID, roleID, permissionID int) error {
+	path := "/api/admin/products/" + strconv.Itoa(productID) + "/roles/" + strconv.Itoa(roleID) + "/permissions/" + strconv.Itoa(permissionID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) ListSecrets(ctx context.Context, orgUUID string) ([]SecretEntry, error) {
+	var out []SecretEntry
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/secrets"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteSecret(ctx context.Context, orgUUID, name string) error {
+	path := "/api/admin/orgs/" + url.PathEscape(orgUUID) + "/secrets/" + url.PathEscape(name)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+func (c *Client) GetHelpCategories(ctx context.Context) ([]HelpCategory, error) {
+	var out []HelpCategory
+	if err := c.do(ctx, http.MethodGet, "/api/help/categories", nil, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetHelpCategory(ctx context.Context, slug string) (*HelpCategory, error) {
+	var out HelpCategory
+	path := "/api/help/categories/" + url.PathEscape(slug)
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetHelpArticle(ctx context.Context, categorySlug, articleSlug string) (*HelpArticle, error) {
+	var out HelpArticle
+	path := "/api/help/categories/" + url.PathEscape(categorySlug) + "/articles/" + url.PathEscape(articleSlug)
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) SearchHelp(ctx context.Context, query string) ([]HelpArticle, error) {
+	var out []HelpArticle
+	path := "/api/help/search?q=" + url.QueryEscape(query)
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListJitGrants(ctx context.Context, orgUUID string) ([]JitGrant, error) {
+	var out []JitGrant
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/jit/grants"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RequestJitGrant(ctx context.Context, orgUUID string, data map[string]any) (*JitGrant, error) {
+	var out JitGrant
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/jit/grants"
+	if err := c.do(ctx, http.MethodPost, path, data, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ApproveJitGrant(ctx context.Context, orgUUID, grantUUID string) (*JitGrant, error) {
+	var out JitGrant
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/jit/grants/" + url.PathEscape(grantUUID) + "/approve"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RevokeJitGrant(ctx context.Context, orgUUID, grantUUID string) error {
+	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/jit/grants/" + url.PathEscape(grantUUID) + "/revoke"
+	return c.do(ctx, http.MethodPost, path, nil, true, nil)
+}
+
+func (c *Client) InviteAccept(ctx context.Context, req InviteAcceptRequest) (*InviteAcceptResponse, error) {
+	var out InviteAcceptResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/invite/accept", req, false, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken != "" {
+		c.APIKey = out.AccessToken
+	}
+	return &out, nil
+}
+
+func (c *Client) CheckOrgName(ctx context.Context, name string) (*OrgCheckResponse, error) {
+	var out OrgCheckResponse
+	path := "/api/auth/check-org-name?name=" + url.QueryEscape(name)
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetSuperuserFlag(ctx context.Context, email string) (*SuperuserResponse, error) {
+	var out SuperuserResponse
+	path := "/api/admin/superuser?email=" + url.QueryEscape(email)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) PostContact(ctx context.Context, req ContactRequest) (*ContactSubmitResponse, error) {
+	var out ContactSubmitResponse
+	if err := c.do(ctx, http.MethodPost, "/api/contact", req, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) PostContactUs(ctx context.Context, req ContactUsRequest) (*ContactSubmitResponse, error) {
+	var out ContactSubmitResponse
+	if err := c.do(ctx, http.MethodPost, "/api/contact-us", req, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetClientIP(ctx context.Context) (*GeoResponse, error) {
+	var out GeoResponse
+	if err := c.do(ctx, http.MethodGet, "/api/geo/ip", nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ensure strconv stays used (helper for callers building queries).
+var _ = strconv.Itoa
