@@ -49,9 +49,10 @@ resp, err := client.Register(ctx, "user@example.com", "password", "acme",
 ### Magic Link
 
 ```go
-redirectURL := "https://app.example.com"
-_, err := client.MagicLinkSendV2(ctx, "user@example.com", &redirectURL)
-resp, err := client.MagicLinkVerifyV2(ctx, "token-from-email")
+_, err := client.SendMagicLink(ctx, "user@example.com",
+    &buttrbase.SendMagicLinkOptions{RedirectURL: "https://app.example.com"})
+resp, err := client.VerifyMagicLink(ctx, "token-from-email")
+fmt.Println(resp.AccessToken) // JWT with sub, org, aud claims
 ```
 
 ### OTP (Passwordless Phone)
