@@ -463,5 +463,76 @@ func (c *Client) ResetSandbox(ctx context.Context, req *SandboxResetRequest) (*S
 	return &out, nil
 }
 
+// ----- Invite-based registration -----
+
+// InviteAccept accepts an invitation and creates a user account.
+// No authentication required — the token in the request acts as the credential.
+// POST /api/auth/invite/accept.
+func (c *Client) InviteAccept(ctx context.Context, req InviteAcceptRequest) (*InviteAcceptResponse, error) {
+	var out InviteAcceptResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/invite/accept", req, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CheckOrgName reports whether an organisation name is available.
+// GET /api/auth/orgs/check.
+func (c *Client) CheckOrgName(ctx context.Context, name string) (*OrgCheckResponse, error) {
+	var out OrgCheckResponse
+	path := "/api/auth/orgs/check?name=" + url.QueryEscape(name)
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetSuperuserFlag looks up the superuser flag for a given email address.
+// Requires platform-admin authentication.
+// GET /api/auth/superuser.
+func (c *Client) GetSuperuserFlag(ctx context.Context, email string) (*SuperuserResponse, error) {
+	var out SuperuserResponse
+	path := "/api/auth/superuser?email=" + url.QueryEscape(email)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Contact forms -----
+
+// PostContact submits an account / sales enquiry form.
+// POST /api/contact.
+func (c *Client) PostContact(ctx context.Context, req ContactRequest) (*ContactSubmitResponse, error) {
+	var out ContactSubmitResponse
+	if err := c.do(ctx, http.MethodPost, "/api/contact", req, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PostContactUs submits a general contact-us form.
+// POST /api/contact-us.
+func (c *Client) PostContactUs(ctx context.Context, req ContactUsRequest) (*ContactSubmitResponse, error) {
+	var out ContactSubmitResponse
+	if err := c.do(ctx, http.MethodPost, "/api/contact-us", req, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Geo / IP -----
+
+// GetClientIP returns the caller's IP address and basic geo context.
+// Useful during registration for timezone / country pre-fill.
+// GET /api/geo/ip.
+func (c *Client) GetClientIP(ctx context.Context) (*GeoResponse, error) {
+	var out GeoResponse
+	if err := c.do(ctx, http.MethodGet, "/api/geo/ip", nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ensure strconv stays used (helper for callers building queries).
 var _ = strconv.Itoa
