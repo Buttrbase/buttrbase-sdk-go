@@ -533,3 +533,73 @@ type JitGrant struct {
 type RecoveryCodesResponse struct {
 	Codes []string `json:"codes"`
 }
+
+// ----- Invite-based registration -----
+
+// InviteAcceptRequest is the request body for InviteAccept.
+type InviteAcceptRequest struct {
+	Token     string `json:"token"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	Phone     string `json:"phone,omitempty"`
+}
+
+// InviteAcceptResponse is the response from InviteAccept.
+type InviteAcceptResponse struct {
+	UserUUID     string `json:"user_uuid"`
+	OrgUUID      string `json:"org_uuid"`
+	Role         string `json:"role"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int64  `json:"expires_in"`
+	Message      string `json:"message"`
+}
+
+// OrgCheckResponse is the response from CheckOrgName.
+type OrgCheckResponse struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+}
+
+// SuperuserResponse is the response from GetSuperuserFlag.
+type SuperuserResponse struct {
+	Email       string `json:"email"`
+	IsSuperuser bool   `json:"is_superuser"`
+}
+
+// ----- Contact forms -----
+
+// ContactRequest is the request body for PostContact.
+type ContactRequest struct {
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Company string `json:"company,omitempty"`
+	Message string `json:"message"`
+	AppID   string `json:"app_id,omitempty"`
+}
+
+// ContactUsRequest is the request body for PostContactUs.
+type ContactUsRequest struct {
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Subject string `json:"subject"`
+	Message string `json:"message"`
+}
+
+// ContactSubmitResponse is the response from PostContact and PostContactUs.
+type ContactSubmitResponse struct {
+	Message     string `json:"message"`
+	ReferenceID string `json:"reference_id"`
+}
+
+// ----- Geo / IP -----
+
+// GeoResponse is the response from GetClientIP.
+type GeoResponse struct {
+	IP       string `json:"ip"`
+	Country  string `json:"country"`
+	Timezone string `json:"timezone"`
+}
