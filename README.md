@@ -1,5 +1,11 @@
 # Go SDK
 
+> **Breaking change in this release — `app_uuid` migration.**
+> `Register`, `Login`, `SendMagicLink`, `OtpSend`, and `OtpVerify` now take
+> `appUUID string` (a UUID literal) as their first argument. The legacy
+> `app` / `appName` / `appId` slug fields are no longer accepted by the
+> backend on any auth route. See `CHANGELOG.md` for the full list.
+
 ## Overview
 
 The official Go SDK for ButtrBase. Standard `net/http`-based client covering every API surface — auth, organizations, billing, RBAC, teams, credentials, search, AI gateway, webhooks, zero-trust, and more.
@@ -25,8 +31,10 @@ func main() {
     client := buttrbase.New("bb_live_...")
     ctx := context.Background()
 
-    // Login
-    resp, err := client.Login(ctx, "user@example.com", "password", "acme")
+    appUUID := "018f1234-5678-7000-8000-000000000001"
+
+    // Login (app_uuid is now required)
+    resp, err := client.Login(ctx, appUUID, "user@example.com", "password", "")
     if err != nil { panic(err) }
     fmt.Println(resp.AccessToken)
 
@@ -42,24 +50,87 @@ func main() {
 ### Register
 
 ```go
-resp, err := client.Register(ctx, "user@example.com", "password", "acme",
+appUUID := "018f1234-5678-7000-8000-000000000001"
+resp, err := client.Register(ctx, appUUID, "user@example.com", "password", "Acme",
     &buttrbase.RegisterOptions{FirstName: "Jane", LastName: "Doe"})
 ```
 
 ### Magic Link
 
 ```go
-_, err := client.SendMagicLink(ctx, "user@example.com",
-    &buttrbase.SendMagicLinkOptions{RedirectURL: "https://app.example.com"})
+_, err := client.SendMagicLink(ctx, appUUID, "user@example.com",
+    &buttrbase.SendMagicLinkOptions{RedirectURL: "https://app.example.com/auth/callback"})
 resp, err := client.VerifyMagicLink(ctx, "token-from-email")
 fmt.Println(resp.AccessToken) // JWT with sub, org, aud claims
 ```
 
-### OTP (Passwordless Phone)
+### OTP (Passwordless)
 
 ```go
-_, err := client.OtpSendV2(ctx, "+15551234567")
-resp, err := client.OtpVerifyV2(ctx, "+15551234567", "123456")
+// phone OR email — appUUID is required
+_, err := client.OtpSend(ctx, appUUID, "+15551234567")
+resp, err := client.OtpVerify(ctx, appUUID, "+15551234567", "123456")
+```
+
+### API Key Exchange
+
+```go
+// Trade a raw app API key for an access/refresh pair.
+pair, err := client.ExchangeAPIKey(ctx, "wb_live_xa9dBz...")
+// raw_key is no longer needed; store pair.RefreshToken for renewal.
+
+// Renew before pair.AccessExpiresAt elapses — the old refresh is revoked.
+fresh, err := client.ExchangeRefreshToken(ctx, pair.RefreshToken)
+```
+
+### OAuth Start URL
+
+```go
+url := client.OAuthStartURL(
+    buttrbase.OAuthProviderGoogle,
+    appUUID,
+    "https://app.example.com/auth/google/callback",
+)
+// 302 the browser to `url`; the backend signs a state token and bounces
+// to the provider's authorize URL.
+```
+
+### Passkey support (WebAuthn)
+
+Thin wrappers around the four passkey ceremony endpoints. The WebAuthn
+challenge / credential blobs are pass-through `json.RawMessage` — no
+webauthn helper library is pulled in. The browser does the actual ceremony
+via `navigator.credentials.create / .get`.
+
+```go
+// Registration (requires an authenticated caller — passkey is added to the
+// user's existing account).
+challenge, err := client.PasskeyRegisterBegin(ctx)
+// ... hand challenge.Challenge to the browser, get back a credential JSON ...
+result, err := client.PasskeyRegisterComplete(ctx, buttrbase.PasskeyRegistrationComplete{
+    RegistrationState: challenge.RegistrationState,
+    Credential:        browserCredentialJSON,
+})
+fmt.Println(result.CredentialID)
+
+// Authentication (anonymous):
+ach, err := client.PasskeyAuthenticateBegin(ctx)
+// ... browser produces an assertion ...
+session, err := client.PasskeyAuthenticateComplete(ctx, buttrbase.PasskeyAuthComplete{
+    AuthState:  ach.AuthState,
+    Credential: browserAssertionJSON,
+})
+
+// List the signed-in user's enrolled passkeys (descending by CreatedAt):
+passkeys, err := client.ListMyPasskeys(ctx)
+for _, p := range passkeys {
+    name := p.CredentialIDPrefix
+    if p.Nickname != nil { name = *p.Nickname }
+    fmt.Println(name, p.CredentialUUID)
+}
+
+// Revoke one by its CredentialUUID (owner check enforced server-side):
+if err := client.DeleteMyPasskey(ctx, passkeys[0].CredentialUUID); err != nil { /* ... */ }
 ```
 
 ### SSO (OIDC / SAML)
@@ -111,12 +182,79 @@ accounts, err := client.ListDeviceAccounts(ctx, "device-uuid")
 _, err = client.SwitchDeviceActiveAccount(ctx, "device-uuid", "account-uuid")
 ```
 
-## API Keys v2
+## API Keys v2 (org-scoped, legacy)
 
 ```go
-keys, err := client.ListApiKeysV2(ctx, "org-uuid")
-newKey, err := client.CreateApiKeyV2(ctx, "org-uuid", "my-api-key")
-err = client.DeleteApiKeyV2(ctx, "org-uuid", "key-uuid")
+keys, err := client.ListAPIKeysV2(ctx)
+newKey, err := client.CreateAPIKeyV2(ctx, map[string]any{"name": "my-api-key"})
+err = client.DeleteAPIKeyV2(ctx, "key-id")
+```
+
+## App-Level API Keys
+
+```go
+appUUID := "018f1234-5678-7000-8000-000000000001"
+
+// List
+keys, err := client.ListAppAPIKeys(ctx, appUUID)
+
+// Create — raw_key is shown ONCE; persist it before this call returns.
+created, err := client.CreateAppAPIKey(ctx, appUUID, buttrbase.CreateAPIKeyInput{
+    Name:    "production-server",
+    Env:     buttrbase.APIKeyEnvLive,
+    KeyType: buttrbase.APIKeyTypeShortLived,
+})
+fmt.Println("save now — never shown again:", created.RawKey)
+
+// Expiring key
+inDays := 30
+expiring, err := client.CreateAppAPIKey(ctx, appUUID, buttrbase.CreateAPIKeyInput{
+    Name:    "contractor",
+    Env:     buttrbase.APIKeyEnvLive,
+    KeyType: buttrbase.APIKeyTypeExpiring,
+    Expiry:  &buttrbase.ExpiryInput{InDays: &inDays},
+})
+
+// Rotate (same name/type/env; old key is revoked)
+rotated, err := client.RotateAppAPIKey(ctx, appUUID, created.KeyUUID)
+
+// Revoke (idempotent)
+err = client.RevokeAppAPIKey(ctx, appUUID, created.KeyUUID)
+```
+
+## App-Level OAuth Provider Configs
+
+```go
+// Register Google for the app
+cfg, err := client.CreateOAuthConfig(ctx, appUUID, buttrbase.CreateOAuthConfigInput{
+    Provider:     buttrbase.OAuthProviderGoogle,
+    ClientID:     "google-client-id",
+    ClientSecret: "google-client-secret",
+    RedirectURIs: []string{"https://app.example.com/auth/google/callback"},
+    Scopes:       []string{"openid", "email", "profile"},
+    Enabled:      true,
+})
+
+// Patch — only non-nil fields are sent
+enabled := false
+_, err = client.UpdateOAuthConfig(ctx, appUUID, "google", buttrbase.UpdateOAuthConfigInput{
+    Enabled: &enabled,
+})
+
+configs, err := client.ListOAuthConfigs(ctx, appUUID)
+err = client.DeleteOAuthConfig(ctx, appUUID, "google")
+```
+
+## App-Level Audit Log
+
+```go
+rows, err := client.ReadAuditLog(ctx, appUUID, buttrbase.AuditLogQuery{
+    Limit:        500,
+    ActionPrefix: "api_key.",
+})
+for _, row := range rows {
+    fmt.Println(row.CreatedAt, row.Action, row.TargetID)
+}
 ```
 
 ## Entitlements
@@ -220,10 +358,12 @@ Non-2xx responses return `*ButtrbaseError` with `StatusCode`, `Detail`, and `Bod
 client := buttrbase.New("bb_live_...")
 ctx := context.Background()
 
+appUUID := "018f1234-5678-7000-8000-000000000001"
+
 // 1. Register and login
-_, err := client.Register(ctx, "admin@acme.com", "s3cur3!", "Acme Corp",
+_, err := client.Register(ctx, appUUID, "admin@acme.com", "s3cur3!", "Acme Corp",
     &buttrbase.RegisterOptions{FirstName: "Alice"})
-login, err := client.Login(ctx, "admin@acme.com", "s3cur3!", "Acme Corp")
+login, err := client.Login(ctx, appUUID, "admin@acme.com", "s3cur3!", "")
 
 // 2. Get profile
 profile, err := client.GetProfile(ctx)

@@ -92,20 +92,6 @@ func (c *Client) do(ctx context.Context, method, path string, body any, auth boo
 	return nil
 }
 
-// ButtrbaseError is returned when the API responds with a non-2xx status.
-type ButtrbaseError struct {
-	StatusCode int
-	Detail     string
-	Body       []byte
-}
-
-func (e *ButtrbaseError) Error() string {
-	if e.Detail != "" {
-		return fmt.Sprintf("buttrbase: HTTP %d: %s", e.StatusCode, e.Detail)
-	}
-	return fmt.Sprintf("buttrbase: HTTP %d", e.StatusCode)
-}
-
 // ----- Coupons -----
 
 func (c *Client) ValidateCoupon(ctx context.Context, code string, opts *ValidateCouponOptions) (*CouponValidation, error) {
@@ -150,27 +136,34 @@ func (c *Client) RedeemGiftCard(ctx context.Context, code string, amountCents in
 
 // ----- Magic link -----
 
-func (c *Client) SendMagicLink(ctx context.Context, email string, opts *SendMagicLinkOptions) (*MagicLinkSend, error) {
-	body := map[string]any{"email": email}
+// SendMagicLink sends a magic-link email for the given app.
+// POST /api/auth/magic-link/send
+//
+// appUUID must be the target app's UUID. The legacy `app` / `appName`
+// slug fields are no longer accepted by the backend.
+func (c *Client) SendMagicLink(ctx context.Context, appUUID, email string, opts *SendMagicLinkOptions) (*MagicLinkSend, error) {
+	body := map[string]any{"app_uuid": appUUID, "email": email}
 	if opts != nil {
 		if opts.RedirectURL != "" {
-			body["redirect_url"] = opts.RedirectURL
+			body["redirect_to"] = opts.RedirectURL
 		}
 		if opts.TTLSeconds != nil {
 			body["ttl_seconds"] = *opts.TTLSeconds
 		}
 	}
 	var out MagicLinkSend
-	if err := c.do(ctx, http.MethodPost, "/v1/magic-link/send", body, true, &out); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/auth/magic-link/send", body, false, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
+// VerifyMagicLink consumes a magic-link token and returns the session.
+// POST /api/auth/magic-link/verify
 func (c *Client) VerifyMagicLink(ctx context.Context, token string) (*MagicLinkVerify, error) {
 	body := map[string]any{"token": token}
 	var out MagicLinkVerify
-	if err := c.do(ctx, http.MethodPost, "/v1/magic-link/verify", body, true, &out); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/auth/magic-link/verify", body, false, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -433,8 +426,15 @@ func (c *Client) ResetSandbox(ctx context.Context, req *SandboxResetRequest) (*S
 	return &out, nil
 }
 
-func (c *Client) Register(ctx context.Context, email, password, orgName string, opts *RegisterOptions) (*LoginResponse, error) {
-	body := map[string]any{"email": email, "password": password, "org_name": orgName}
+// ===== Auth =====
+
+// Register creates a new account scoped to the given app.
+// POST /api/auth/register
+//
+// appUUID identifies the target app — this replaces the legacy `app`
+// slug parameter, which the backend no longer accepts.
+func (c *Client) Register(ctx context.Context, appUUID, email, password, orgName string, opts *RegisterOptions) (*LoginResponse, error) {
+	body := map[string]any{"app_uuid": appUUID, "email": email, "password": password, "org_name": orgName}
 	if opts != nil {
 		if opts.FirstName != "" {
 			body["first_name"] = opts.FirstName
@@ -453,8 +453,16 @@ func (c *Client) Register(ctx context.Context, email, password, orgName string, 
 	return &out, nil
 }
 
-func (c *Client) Login(ctx context.Context, email, password, orgName string) (*LoginResponse, error) {
-	body := map[string]any{"email": email, "password": password, "org_name": orgName}
+// Login authenticates against the given app and stores the access token.
+// POST /api/auth/login
+//
+// appUUID identifies the target app — this replaces the legacy `app`
+// slug parameter, which the backend no longer accepts.
+func (c *Client) Login(ctx context.Context, appUUID, email, password, orgName string) (*LoginResponse, error) {
+	body := map[string]any{"app_uuid": appUUID, "email": email, "password": password}
+	if orgName != "" {
+		body["org_name"] = orgName
+	}
 	var out LoginResponse
 	if err := c.do(ctx, http.MethodPost, "/api/auth/login", body, false, &out); err != nil {
 		return nil, err
@@ -507,17 +515,30 @@ func (c *Client) GetOrgByDomain(ctx context.Context, domain string) (map[string]
 	return out, nil
 }
 
-func (c *Client) OtpSend(ctx context.Context, phone string) (map[string]any, error) {
-	body := map[string]any{"phone": phone}
+// ===== OTP =====
+
+// OtpSend sends an OTP to a phone number or email for the given app.
+// POST /api/auth/otp
+//
+// appUUID identifies the target app — required by the backend in place
+// of the legacy `app` slug. Pass either a phone or email destination
+// (set the other to "").
+func (c *Client) OtpSend(ctx context.Context, appUUID, phone string) (map[string]any, error) {
+	body := map[string]any{"app_uuid": appUUID, "phone": phone}
 	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/api/auth/otp/send", body, false, &out); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/auth/otp", body, false, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *Client) OtpVerify(ctx context.Context, phone, code string) (*LoginResponse, error) {
-	body := map[string]any{"phone": phone, "code": code}
+// OtpVerify verifies an OTP code against the given app.
+// POST /api/auth/otp/verify
+//
+// appUUID identifies the target app — required by the backend in place
+// of the legacy `app` slug.
+func (c *Client) OtpVerify(ctx context.Context, appUUID, phone, code string) (*LoginResponse, error) {
+	body := map[string]any{"app_uuid": appUUID, "phone": phone, "otp": code}
 	var out LoginResponse
 	if err := c.do(ctx, http.MethodPost, "/api/auth/otp/verify", body, false, &out); err != nil {
 		return nil, err
@@ -1640,6 +1661,273 @@ func (c *Client) GetClientIP(ctx context.Context) (*GeoResponse, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ===== App-scoped: API key exchange =====
+
+// ExchangeAPIKey trades a raw app API key for a bearer access/refresh pair.
+// POST /api/v1/auth/api-key/exchange
+//
+// This endpoint is anonymous — no Authorization header is sent. The raw
+// key is sent in the request body exactly once; the response carries an
+// opaque base32 refresh token suitable for ExchangeRefreshToken.
+func (c *Client) ExchangeAPIKey(ctx context.Context, apiKey string) (*ExchangeResponse, error) {
+	body := map[string]any{"api_key": apiKey}
+	var out ExchangeResponse
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/api-key/exchange", body, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ExchangeRefreshToken trades an opaque refresh token for a fresh
+// access/refresh pair. The presented refresh token is revoked as a side
+// effect; the returned pair must replace the caller's stored tokens.
+//
+// POST /api/v1/auth/api-key/exchange (refresh_token mode)
+func (c *Client) ExchangeRefreshToken(ctx context.Context, refreshToken string) (*ExchangeResponse, error) {
+	body := map[string]any{"refresh_token": refreshToken}
+	var out ExchangeResponse
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/api-key/exchange", body, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ===== App-scoped: OAuth start URL =====
+
+// OAuthStartURL builds the absolute URL of the OAuth start endpoint for
+// the given provider, app, and post-callback return target. Issuing a
+// GET against this URL yields a 302 to the provider's authorize URL
+// with a signed `state` carrying app_uuid + return_to.
+//
+// The returned URL is safe to send as a redirect target — no secrets
+// are included. returnTo must exactly match one of the redirect URIs
+// configured on the app's OAuth config for the provider.
+func (c *Client) OAuthStartURL(provider OAuthProvider, appUUID string, returnTo string) string {
+	q := url.Values{}
+	q.Set("app_uuid", appUUID)
+	if returnTo != "" {
+		q.Set("return_to", returnTo)
+	}
+	return c.BaseURL + "/api/v1/auth/oauth/" + url.PathEscape(string(provider)) + "/start?" + q.Encode()
+}
+
+// ===== App-scoped: API key admin =====
+
+// ListAppAPIKeys returns every API key issued for the app, including
+// revoked ones. Raw key material is never returned by this endpoint.
+//
+// GET /api/v1/apps/{app_uuid}/api-keys
+func (c *Client) ListAppAPIKeys(ctx context.Context, appUUID string) ([]APIKeySummary, error) {
+	var out []APIKeySummary
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateAppAPIKey provisions a new API key for the app. The response's
+// RawKey field is the only time the secret is ever returned — the
+// caller is responsible for persisting it.
+//
+// POST /api/v1/apps/{app_uuid}/api-keys
+func (c *Client) CreateAppAPIKey(ctx context.Context, appUUID string, input CreateAPIKeyInput) (*CreatedKeyResponse, error) {
+	var out CreatedKeyResponse
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys"
+	if err := c.do(ctx, http.MethodPost, path, input, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RevokeAppAPIKey marks an API key as revoked. Idempotent: revoking an
+// already-revoked key returns successfully without changing state.
+//
+// DELETE /api/v1/apps/{app_uuid}/api-keys/{key_uuid}
+func (c *Client) RevokeAppAPIKey(ctx context.Context, appUUID, keyUUID string) error {
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys/" + url.PathEscape(keyUUID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+// RotateAppAPIKey issues a replacement key with the same name, type,
+// and env as the original, then revokes the original. For expiring
+// keys the original expires_at is preserved.
+//
+// POST /api/v1/apps/{app_uuid}/api-keys/{key_uuid}/rotate
+func (c *Client) RotateAppAPIKey(ctx context.Context, appUUID, keyUUID string) (*CreatedKeyResponse, error) {
+	var out CreatedKeyResponse
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys/" + url.PathEscape(keyUUID) + "/rotate"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ===== App-scoped: OAuth config admin =====
+
+// ListOAuthConfigs returns the per-provider OAuth configs registered
+// for the app. Client secrets are never returned.
+//
+// GET /api/v1/apps/{app_uuid}/oauth-configs
+func (c *Client) ListOAuthConfigs(ctx context.Context, appUUID string) ([]OAuthConfigSummary, error) {
+	var out []OAuthConfigSummary
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/oauth-configs"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateOAuthConfig registers an OAuth provider config for the app.
+//
+// POST /api/v1/apps/{app_uuid}/oauth-configs
+func (c *Client) CreateOAuthConfig(ctx context.Context, appUUID string, input CreateOAuthConfigInput) (*OAuthConfigSummary, error) {
+	var out OAuthConfigSummary
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/oauth-configs"
+	if err := c.do(ctx, http.MethodPost, path, input, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateOAuthConfig partially updates an existing OAuth provider
+// config. Only the non-nil fields in patch are sent on the wire.
+//
+// PATCH /api/v1/apps/{app_uuid}/oauth-configs/{provider}
+func (c *Client) UpdateOAuthConfig(ctx context.Context, appUUID, provider string, patch UpdateOAuthConfigInput) (*OAuthConfigSummary, error) {
+	var out OAuthConfigSummary
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/oauth-configs/" + url.PathEscape(provider)
+	if err := c.do(ctx, http.MethodPatch, path, patch, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteOAuthConfig removes the OAuth provider config for the app.
+//
+// DELETE /api/v1/apps/{app_uuid}/oauth-configs/{provider}
+func (c *Client) DeleteOAuthConfig(ctx context.Context, appUUID, provider string) error {
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/oauth-configs/" + url.PathEscape(provider)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+// ===== App-scoped: audit log =====
+
+// ReadAuditLog returns rows from the per-app security audit log,
+// newest first. The backend defaults limit to 200 and caps it at 1000.
+// ActionPrefix narrows by event family (e.g. "api_key.", "oauth_config.").
+//
+// GET /api/v1/apps/{app_uuid}/audit-log
+func (c *Client) ReadAuditLog(ctx context.Context, appUUID string, opts AuditLogQuery) ([]AuditRow, error) {
+	q := url.Values{}
+	if opts.Limit > 0 {
+		q.Set("limit", strconv.Itoa(opts.Limit))
+	}
+	if opts.ActionPrefix != "" {
+		q.Set("action_prefix", opts.ActionPrefix)
+	}
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/audit-log"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out []AuditRow
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ===== Passkeys (WebAuthn) =====
+//
+// Thin HTTP wrappers around the four passkey ceremony endpoints. The
+// WebAuthn challenge / credential blobs are pass-through json.RawMessage
+// — the browser's navigator.credentials.create / .get APIs do the heavy
+// lifting. Begin endpoints unwrap the backend's {"data": ...} envelope
+// for ergonomics.
+
+// passkeyDataEnvelope is the {"data": ...} shape the backend returns for
+// passkey endpoints. Kept private; we unwrap it for callers.
+type passkeyDataEnvelope[T any] struct {
+	Data T `json:"data"`
+}
+
+// PasskeyRegisterBegin starts passkey registration. Requires an
+// authenticated caller (passkey is added to the user's existing account).
+// Pass the returned Challenge to navigator.credentials.create in the
+// browser.
+//
+// POST /api/passkeys/register/begin
+func (c *Client) PasskeyRegisterBegin(ctx context.Context) (*PasskeyRegistrationChallenge, error) {
+	var env passkeyDataEnvelope[PasskeyRegistrationChallenge]
+	if err := c.do(ctx, http.MethodPost, "/api/passkeys/register/begin", nil, true, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// PasskeyRegisterComplete finishes passkey registration. body.Credential
+// is the WebAuthn RegisterPublicKeyCredential returned by the browser.
+//
+// POST /api/passkeys/register/complete
+func (c *Client) PasskeyRegisterComplete(ctx context.Context, body PasskeyRegistrationComplete) (*PasskeyRegistrationResult, error) {
+	var env passkeyDataEnvelope[PasskeyRegistrationResult]
+	if err := c.do(ctx, http.MethodPost, "/api/passkeys/register/complete", body, true, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// PasskeyAuthenticateBegin starts passkey authentication. Anonymous; no
+// Authorization header is sent. Pass the returned Challenge to
+// navigator.credentials.get in the browser.
+//
+// POST /api/passkeys/authenticate/begin
+func (c *Client) PasskeyAuthenticateBegin(ctx context.Context) (*PasskeyAuthChallenge, error) {
+	var env passkeyDataEnvelope[PasskeyAuthChallenge]
+	if err := c.do(ctx, http.MethodPost, "/api/passkeys/authenticate/begin", nil, false, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// PasskeyAuthenticateComplete finishes passkey authentication. The
+// session payload shape is currently unstable on the backend, so we
+// return raw JSON — callers should narrow at the call site.
+//
+// POST /api/passkeys/authenticate/complete
+func (c *Client) PasskeyAuthenticateComplete(ctx context.Context, body PasskeyAuthComplete) (json.RawMessage, error) {
+	var out json.RawMessage
+	if err := c.do(ctx, http.MethodPost, "/api/passkeys/authenticate/complete", body, false, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListMyPasskeys returns the signed-in user's enrolled passkeys, in
+// descending CreatedAt order. Each row carries a CredentialUUID (for
+// revocation) and a 12-char CredentialIDPrefix for display.
+//
+// Requires a bearer token.
+//
+// GET /api/v1/me/passkeys
+func (c *Client) ListMyPasskeys(ctx context.Context) ([]PasskeyListItem, error) {
+	var out []PasskeyListItem
+	if err := c.do(ctx, http.MethodGet, "/api/v1/me/passkeys", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DeleteMyPasskey revokes one of the signed-in user's enrolled passkeys
+// by its credential UUID. The owner check is enforced on the backend;
+// UUIDs owned by another user return 404.
+//
+// DELETE /api/v1/me/passkeys/{credential_uuid}
+func (c *Client) DeleteMyPasskey(ctx context.Context, credentialUUID string) error {
+	path := "/api/v1/me/passkeys/" + url.PathEscape(credentialUUID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
 }
 
 // ensure strconv stays used (helper for callers building queries).

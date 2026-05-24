@@ -1,5 +1,10 @@
 package buttrbase
 
+import (
+	"encoding/json"
+	"time"
+)
+
 // ValidateCouponOptions holds optional parameters for ValidateCoupon.
 type ValidateCouponOptions struct {
 	UserID          *int   `json:"user_id,omitempty"`
@@ -602,4 +607,211 @@ type GeoResponse struct {
 	IP       string `json:"ip"`
 	Country  string `json:"country"`
 	Timezone string `json:"timezone"`
+}
+
+// ----- App-scoped surface (app_uuid era) -----
+
+// OAuthProvider names the supported per-app OAuth identity providers.
+// The backend currently fully implements `google` and `microsoft`;
+// `github` and `apple` are accepted at the config layer.
+type OAuthProvider string
+
+const (
+	OAuthProviderGoogle    OAuthProvider = "google"
+	OAuthProviderMicrosoft OAuthProvider = "microsoft"
+	OAuthProviderGithub    OAuthProvider = "github"
+	OAuthProviderApple     OAuthProvider = "apple"
+)
+
+// APIKeyType is the lifecycle category of an app-level API key.
+type APIKeyType string
+
+const (
+	// APIKeyTypeShortLived is the long-lived key that callers exchange for a JWT pair.
+	APIKeyTypeShortLived APIKeyType = "short_lived"
+	// APIKeyTypePermanent is a non-expiring key used directly as a bearer credential.
+	APIKeyTypePermanent APIKeyType = "permanent"
+	// APIKeyTypeExpiring is a key with a fixed expiration; rotation preserves the original expiry.
+	APIKeyTypeExpiring APIKeyType = "expiring"
+)
+
+// APIKeyEnv selects the environment a key is bound to.
+type APIKeyEnv string
+
+const (
+	APIKeyEnvLive APIKeyEnv = "live"
+	APIKeyEnvTest APIKeyEnv = "test"
+)
+
+// ExchangeResponse is the response from POST /api/v1/auth/api-key/exchange.
+//
+// Returned by both the initial exchange (raw API key in) and the refresh
+// exchange (opaque refresh token in). The presented refresh token, if any,
+// is revoked as a side effect.
+type ExchangeResponse struct {
+	AccessToken      string    `json:"access_token"`
+	RefreshToken     string    `json:"refresh_token"`
+	TokenType        string    `json:"token_type"`
+	AccessExpiresAt  time.Time `json:"access_expires_at"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
+}
+
+// APIKeySummary is the metadata view of an app-level API key; the raw key
+// material is never returned by list/get endpoints.
+type APIKeySummary struct {
+	KeyUUID    string     `json:"key_uuid"`
+	AppUUID    string     `json:"app_uuid"`
+	KeyPrefix  string     `json:"key_prefix"`
+	Name       string     `json:"name"`
+	KeyType    APIKeyType `json:"key_type"`
+	ExpiresAt  *time.Time `json:"expires_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+	RevokedAt  *time.Time `json:"revoked_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// CreatedKeyResponse is returned by CreateAppAPIKey and RotateAppAPIKey.
+// RawKey is shown exactly once — the caller must persist it immediately,
+// because the backend stores only sha256(raw_key).
+type CreatedKeyResponse struct {
+	KeyUUID   string     `json:"key_uuid"`
+	RawKey    string     `json:"raw_key"`
+	KeyPrefix string     `json:"key_prefix"`
+	KeyType   APIKeyType `json:"key_type"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+// CreateAPIKeyInput is the request body for CreateAppAPIKey.
+//
+// When KeyType is APIKeyTypeExpiring, Expiry is required; otherwise it
+// must be nil.
+type CreateAPIKeyInput struct {
+	Name    string       `json:"name"`
+	Env     APIKeyEnv    `json:"env"`
+	KeyType APIKeyType   `json:"key_type"`
+	Expiry  *ExpiryInput `json:"expiry,omitempty"`
+}
+
+// ExpiryInput is a tagged union — exactly one of Absolute or InDays must
+// be non-nil for an expiring key.
+type ExpiryInput struct {
+	Absolute *time.Time `json:"absolute,omitempty"`
+	InDays   *int       `json:"in_days,omitempty"`
+}
+
+// OAuthConfigSummary is the per-app per-provider OAuth configuration.
+// Secrets are never returned — only the metadata required to mint
+// authorize URLs and validate callbacks.
+type OAuthConfigSummary struct {
+	Provider     OAuthProvider `json:"provider"`
+	ClientID     string        `json:"client_id"`
+	RedirectURIs []string      `json:"redirect_uris"`
+	Scopes       []string      `json:"scopes"`
+	Enabled      bool          `json:"enabled"`
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
+}
+
+// CreateOAuthConfigInput is the request body for CreateOAuthConfig.
+type CreateOAuthConfigInput struct {
+	Provider     OAuthProvider `json:"provider"`
+	ClientID     string        `json:"client_id"`
+	ClientSecret string        `json:"client_secret"`
+	RedirectURIs []string      `json:"redirect_uris"`
+	Scopes       []string      `json:"scopes"`
+	Enabled      bool          `json:"enabled"`
+}
+
+// UpdateOAuthConfigInput is the PATCH body for UpdateOAuthConfig. Only
+// non-nil fields are sent — nil fields preserve the existing value.
+type UpdateOAuthConfigInput struct {
+	ClientID     *string   `json:"client_id,omitempty"`
+	ClientSecret *string   `json:"client_secret,omitempty"`
+	RedirectURIs *[]string `json:"redirect_uris,omitempty"`
+	Scopes       *[]string `json:"scopes,omitempty"`
+	Enabled      *bool     `json:"enabled,omitempty"`
+}
+
+// AuditLogQuery holds optional filters for ReadAuditLog. The backend
+// caps Limit at 1000 (defaults to 200 when zero). ActionPrefix matches
+// `action LIKE 'prefix%'` — e.g. "api_key." or "oauth_config.".
+type AuditLogQuery struct {
+	Limit        int    `json:"-"`
+	ActionPrefix string `json:"-"`
+}
+
+// AuditRow is one entry in the per-app security audit log.
+type AuditRow struct {
+	ID            int64                  `json:"id"`
+	AppUUID       string                 `json:"app_uuid"`
+	ActorUserUUID *string                `json:"actor_user_uuid"`
+	Action        string                 `json:"action"`
+	TargetID      *string                `json:"target_id"`
+	Details       map[string]interface{} `json:"details"`
+	IP            *string                `json:"ip"`
+	UserAgent     *string                `json:"user_agent"`
+	CreatedAt     time.Time              `json:"created_at"`
+}
+
+// ----- Passkeys (WebAuthn) -----
+//
+// The backend exposes the WebAuthn ceremonies as two-phase begin/complete
+// endpoints. The challenge / credential blobs are pass-through
+// json.RawMessage — we don't pull in a webauthn helper library; the
+// browser's navigator.credentials.create / .get APIs consume and produce
+// these JSON shapes directly.
+
+// PasskeyRegistrationChallenge is the response from
+// POST /api/passkeys/register/begin. Challenge is a WebAuthn
+// CreationChallengeResponse; pass it to navigator.credentials.create in
+// the browser. RegistrationState is an opaque server-signed blob the
+// client must echo back unchanged on the matching complete call.
+type PasskeyRegistrationChallenge struct {
+	Challenge         json.RawMessage `json:"challenge"`
+	RegistrationState string          `json:"registration_state"`
+}
+
+// PasskeyRegistrationComplete is the body for
+// POST /api/passkeys/register/complete. Credential is the WebAuthn
+// RegisterPublicKeyCredential returned by the browser.
+type PasskeyRegistrationComplete struct {
+	RegistrationState string          `json:"registration_state"`
+	Credential        json.RawMessage `json:"credential"`
+}
+
+// PasskeyRegistrationResult is the response from
+// POST /api/passkeys/register/complete.
+type PasskeyRegistrationResult struct {
+	CredentialID string `json:"credential_id"`
+	Message      string `json:"message"`
+}
+
+// PasskeyAuthChallenge is the response from
+// POST /api/passkeys/authenticate/begin. Challenge is a WebAuthn
+// RequestChallengeResponse.
+type PasskeyAuthChallenge struct {
+	Challenge json.RawMessage `json:"challenge"`
+	AuthState string          `json:"auth_state"`
+}
+
+// PasskeyAuthComplete is the body for
+// POST /api/passkeys/authenticate/complete. Credential is the WebAuthn
+// PublicKeyCredential assertion returned by the browser.
+type PasskeyAuthComplete struct {
+	AuthState  string          `json:"auth_state"`
+	Credential json.RawMessage `json:"credential"`
+}
+
+// PasskeyListItem is a single row returned by GET /api/v1/me/passkeys.
+//
+// CredentialIDPrefix is the first 12 characters of the WebAuthn credential
+// ID — enough to disambiguate in a dashboard without exposing the full
+// identifier. Timestamps use the standard RFC 3339 form via time.Time.
+type PasskeyListItem struct {
+	CredentialUUID     string     `json:"credential_uuid"`
+	CredentialIDPrefix string     `json:"credential_id_prefix"`
+	AppUUID            *string    `json:"app_uuid"`
+	Nickname           *string    `json:"nickname"`
+	LastUsedAt         *time.Time `json:"last_used_at"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
