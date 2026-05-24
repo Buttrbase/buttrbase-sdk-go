@@ -1813,6 +1813,41 @@ func (c *Client) DeleteOAuthConfig(ctx context.Context, appUUID, provider string
 	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
 }
 
+// ===== App-scoped: WebAuthn relying-party config admin =====
+
+// GetAppRPConfig fetches the per-app WebAuthn relying-party config.
+//
+// GET /api/v1/apps/{app_uuid}/rp-config
+//
+// A nil RPID on the returned struct means the app has no override and
+// falls back to the deployment-wide BUTTRBASE_WEBAUTHN_RP_ID env var.
+func (c *Client) GetAppRPConfig(ctx context.Context, appUUID string) (*AppRpConfig, error) {
+	var out AppRpConfig
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/rp-config"
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateAppRPConfig partially updates the app's WebAuthn relying-party
+// config. Only the non-nil fields in patch are sent on the wire.
+//
+// PATCH /api/v1/apps/{app_uuid}/rp-config
+//
+// Note: a nil RPID in the response means the app falls back to the
+// env-var RP id. Clearing rp_id back to nil cannot be expressed through
+// UpdateAppRpConfigInput (omitempty drops nil pointers); callers needing
+// that must send a raw `{"rp_id": null}` body — known limitation.
+func (c *Client) UpdateAppRPConfig(ctx context.Context, appUUID string, patch UpdateAppRpConfigInput) (*AppRpConfig, error) {
+	var out AppRpConfig
+	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/rp-config"
+	if err := c.do(ctx, http.MethodPatch, path, patch, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ===== App-scoped: audit log =====
 
 // ReadAuditLog returns rows from the per-app security audit log,

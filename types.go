@@ -732,6 +732,28 @@ type UpdateOAuthConfigInput struct {
 	Enabled      *bool     `json:"enabled,omitempty"`
 }
 
+// AppRpConfig is the per-app WebAuthn relying-party configuration.
+// RPID is a pointer because nil signals that the app inherits the
+// deployment-wide BUTTRBASE_WEBAUTHN_RP_ID env var rather than pinning
+// its own value. RPOrigins lists every full origin (scheme + host +
+// optional port) permitted to drive passkey ceremonies for this RP.
+type AppRpConfig struct {
+	AppUUID    string   `json:"app_uuid"`
+	RPID       *string  `json:"rp_id"`
+	RPOrigins  []string `json:"rp_origins"`
+}
+
+// UpdateAppRpConfigInput is the PATCH body for UpdateAppRPConfig. Only
+// non-nil fields are sent — nil fields preserve the existing value.
+// Known limitation: there is no way to clear rp_id back to nil through
+// this struct (omitempty drops nil pointers); callers that need to
+// reset to the env-var fallback must issue the PATCH with a raw JSON
+// body of `{"rp_id": null}`.
+type UpdateAppRpConfigInput struct {
+	RPID      *string   `json:"rp_id,omitempty"`
+	RPOrigins *[]string `json:"rp_origins,omitempty"`
+}
+
 // AuditLogQuery holds optional filters for ReadAuditLog. The backend
 // caps Limit at 1000 (defaults to 200 when zero). ActionPrefix matches
 // `action LIKE 'prefix%'` — e.g. "api_key." or "oauth_config.".
