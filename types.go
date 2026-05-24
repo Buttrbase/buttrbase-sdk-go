@@ -713,23 +713,34 @@ type OAuthConfigSummary struct {
 }
 
 // CreateOAuthConfigInput is the request body for CreateOAuthConfig.
+//
+// ProviderExtras carries provider-specific extras as raw JSON. Required for
+// Apple sign-in (shape: {"team_id": ..., "key_id": ..., "private_key": <PEM>});
+// the backend strips the private_key field and re-stores it as
+// private_key_encrypted under the app's DEK. Nil / empty map for providers
+// that don't need extras (Google, Microsoft, GitHub).
 type CreateOAuthConfigInput struct {
-	Provider     OAuthProvider `json:"provider"`
-	ClientID     string        `json:"client_id"`
-	ClientSecret string        `json:"client_secret"`
-	RedirectURIs []string      `json:"redirect_uris"`
-	Scopes       []string      `json:"scopes"`
-	Enabled      bool          `json:"enabled"`
+	Provider       OAuthProvider  `json:"provider"`
+	ClientID       string         `json:"client_id"`
+	ClientSecret   string         `json:"client_secret"`
+	RedirectURIs   []string       `json:"redirect_uris"`
+	Scopes         []string       `json:"scopes"`
+	Enabled        bool           `json:"enabled"`
+	ProviderExtras map[string]any `json:"provider_extras,omitempty"`
 }
 
 // UpdateOAuthConfigInput is the PATCH body for UpdateOAuthConfig. Only
 // non-nil fields are sent — nil fields preserve the existing value.
+// ProviderExtras replaces the stored JSON blob entirely when non-nil;
+// for Apple a fresh private_key triggers re-encryption under the app's
+// DEK and rotates the stored ciphertext.
 type UpdateOAuthConfigInput struct {
-	ClientID     *string   `json:"client_id,omitempty"`
-	ClientSecret *string   `json:"client_secret,omitempty"`
-	RedirectURIs *[]string `json:"redirect_uris,omitempty"`
-	Scopes       *[]string `json:"scopes,omitempty"`
-	Enabled      *bool     `json:"enabled,omitempty"`
+	ClientID       *string        `json:"client_id,omitempty"`
+	ClientSecret   *string        `json:"client_secret,omitempty"`
+	RedirectURIs   *[]string      `json:"redirect_uris,omitempty"`
+	Scopes         *[]string      `json:"scopes,omitempty"`
+	Enabled        *bool          `json:"enabled,omitempty"`
+	ProviderExtras map[string]any `json:"provider_extras,omitempty"`
 }
 
 // AppRpConfig is the per-app WebAuthn relying-party configuration.
