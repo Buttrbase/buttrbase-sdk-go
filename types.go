@@ -358,21 +358,32 @@ type Domain struct {
 
 // ----- Webhooks Admin -----
 
-// WebhookEndpoint is the response from webhook endpoints.
+// WebhookEndpoint represents a registered webhook endpoint.
 type WebhookEndpoint struct {
-	ID        int      `json:"id,omitempty"`
-	URL       string   `json:"url"`
-	Events    []string `json:"events"`
-	CreatedAt string   `json:"created_at,omitempty"`
+	ID            int      `json:"id,omitempty"`
+	URL           string   `json:"url"`
+	Events        []string `json:"events,omitempty"`
+	EventTypes    []string `json:"event_types,omitempty"`
+	IsActive      bool     `json:"is_active,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	SecretPresent bool     `json:"secret_present,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"`
+	UpdatedAt     string   `json:"updated_at,omitempty"`
 }
 
-// WebhookDelivery is the response from webhook delivery endpoints.
+// WebhookDelivery represents a single delivery attempt for a webhook endpoint.
 type WebhookDelivery struct {
-	ID          int64  `json:"id"`
-	EndpointID  int    `json:"endpoint_id"`
-	Event       string `json:"event"`
-	Status      string `json:"status"`
-	AttemptedAt string `json:"attempted_at"`
+	ID           int64  `json:"id"`
+	EndpointID   int    `json:"endpoint_id"`
+	Event        string `json:"event,omitempty"`
+	EventType    string `json:"event_type,omitempty"`
+	Status       string `json:"status"`
+	HTTPStatus   *int   `json:"http_status,omitempty"`
+	ResponseBody string `json:"response_body,omitempty"`
+	AttemptCount int    `json:"attempt_count,omitempty"`
+	AttemptedAt  string `json:"attempted_at,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	DeliveredAt  string `json:"delivered_at,omitempty"`
 }
 
 // ----- Payments -----
@@ -749,9 +760,9 @@ type UpdateOAuthConfigInput struct {
 // its own value. RPOrigins lists every full origin (scheme + host +
 // optional port) permitted to drive passkey ceremonies for this RP.
 type AppRpConfig struct {
-	AppUUID    string   `json:"app_uuid"`
-	RPID       *string  `json:"rp_id"`
-	RPOrigins  []string `json:"rp_origins"`
+	AppUUID   string   `json:"app_uuid"`
+	RPID      *string  `json:"rp_id"`
+	RPOrigins []string `json:"rp_origins"`
 }
 
 // UpdateAppRpConfigInput is the PATCH body for UpdateAppRPConfig. Only
@@ -847,4 +858,65 @@ type PasskeyListItem struct {
 	Nickname           *string    `json:"nickname"`
 	LastUsedAt         *time.Time `json:"last_used_at"`
 	CreatedAt          time.Time  `json:"created_at"`
+}
+
+// ----- Password reset -----
+
+// MessageResponse is a generic message response used by password-reset endpoints.
+type MessageResponse struct {
+	Message string `json:"message"`
+}
+
+// ----- Webhooks (v1 API) -----
+
+// WebhookListResponse is the response from ListWebhooks.
+type WebhookListResponse struct {
+	Data []WebhookEndpoint `json:"data"`
+}
+
+// WebhookEndpointResponse is the response from CreateWebhook.
+type WebhookEndpointResponse struct {
+	Data WebhookEndpoint `json:"data"`
+}
+
+// CreateWebhookRequest is the request body for CreateWebhook.
+type CreateWebhookRequest struct {
+	URL           string   `json:"url"`
+	EventTypes    []string `json:"event_types,omitempty"`
+	SigningSecret string   `json:"signing_secret,omitempty"`
+	Description   string   `json:"description,omitempty"`
+}
+
+// RetryDeliveryResponse is the response from RetryWebhookDelivery.
+type RetryDeliveryResponse struct {
+	Status string `json:"status"`
+}
+
+// ----- OAuth refresh -----
+
+// OAuthRefreshResponse is the response from RefreshOAuthConnection.
+type OAuthRefreshResponse struct {
+	Provider  string `json:"provider"`
+	Refreshed bool   `json:"refreshed"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// ----- Email -----
+
+// SendEmailRequest is the request body for SendEmail.
+type SendEmailRequest struct {
+	To          string `json:"to"`
+	Subject     string `json:"subject"`
+	HTMLBody    string `json:"html_body,omitempty"`
+	TextBody    string `json:"text_body,omitempty"`
+	FromAddress string `json:"from_address,omitempty"`
+	ReplyTo     string `json:"reply_to,omitempty"`
+}
+
+// SendEmailResponse is the response from SendEmail.
+type SendEmailResponse struct {
+	Status    string `json:"status"`
+	Provider  string `json:"provider"`
+	Message   string `json:"message,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
 }

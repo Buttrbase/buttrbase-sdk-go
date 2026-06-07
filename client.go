@@ -1399,7 +1399,7 @@ func (c *Client) DeleteWebhookEndpoint(ctx context.Context, orgUUID string, endp
 	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
 }
 
-func (c *Client) ListWebhookDeliveries(ctx context.Context, orgUUID string, endpointID int) ([]WebhookDelivery, error) {
+func (c *Client) ListWebhookEndpointDeliveries(ctx context.Context, orgUUID string, endpointID int) ([]WebhookDelivery, error) {
 	var out []WebhookDelivery
 	path := "/api/orgs/" + url.PathEscape(orgUUID) + "/webhooks/" + strconv.Itoa(endpointID) + "/deliveries"
 	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
@@ -1694,6 +1694,30 @@ func (c *Client) ExchangeRefreshToken(ctx context.Context, refreshToken string) 
 	return &out, nil
 }
 
+// ----- Password reset -----
+
+// RequestPasswordReset sends a password-reset email for the given address.
+// POST /api/auth/request-password-reset. No auth required.
+func (c *Client) RequestPasswordReset(ctx context.Context, email string) (*MessageResponse, error) {
+	body := map[string]any{"email": email}
+	var out MessageResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/request-password-reset", body, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResetPassword sets a new password using the JWT token from the reset email.
+// POST /api/auth/reset-password. No auth required.
+func (c *Client) ResetPassword(ctx context.Context, token, password string) (*MessageResponse, error) {
+	body := map[string]any{"token": token, "password": password}
+	var out MessageResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/reset-password", body, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ===== App-scoped: OAuth start URL =====
 
 // OAuthStartURL builds the absolute URL of the OAuth start endpoint for
@@ -1765,6 +1789,57 @@ func (c *Client) RotateAppAPIKey(ctx context.Context, appUUID, keyUUID string) (
 	return &out, nil
 }
 
+// ----- Webhooks (v1 API) -----
+
+// ListWebhooks returns all webhook endpoints for the authenticated org.
+// GET /api/v1/webhooks
+func (c *Client) ListWebhooks(ctx context.Context) (*WebhookListResponse, error) {
+	var out WebhookListResponse
+	if err := c.do(ctx, http.MethodGet, "/api/v1/webhooks", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateWebhook registers a new webhook endpoint.
+// POST /api/v1/webhooks
+func (c *Client) CreateWebhook(ctx context.Context, req CreateWebhookRequest) (*WebhookEndpointResponse, error) {
+	var out WebhookEndpointResponse
+	if err := c.do(ctx, http.MethodPost, "/api/v1/webhooks", req, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteWebhook removes a webhook endpoint by ID. Returns 204 with no body.
+// DELETE /api/v1/webhooks/{id}
+func (c *Client) DeleteWebhook(ctx context.Context, id int) error {
+	path := fmt.Sprintf("/api/v1/webhooks/%d", id)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+// ListWebhookDeliveries returns delivery history for a webhook endpoint.
+// GET /api/v1/webhooks/{id}/deliveries
+func (c *Client) ListWebhookDeliveries(ctx context.Context, webhookID int) ([]WebhookDelivery, error) {
+	path := fmt.Sprintf("/api/v1/webhooks/%d/deliveries", webhookID)
+	var out []WebhookDelivery
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RetryWebhookDelivery re-queues a permanently-failed delivery.
+// POST /api/v1/webhooks/{webhookID}/deliveries/{deliveryID}/retry
+func (c *Client) RetryWebhookDelivery(ctx context.Context, webhookID, deliveryID int) (*RetryDeliveryResponse, error) {
+	path := fmt.Sprintf("/api/v1/webhooks/%d/deliveries/%d/retry", webhookID, deliveryID)
+	var out RetryDeliveryResponse
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ===== App-scoped: OAuth config admin =====
 
 // ListOAuthConfigs returns the per-provider OAuth configs registered
@@ -1811,6 +1886,31 @@ func (c *Client) UpdateOAuthConfig(ctx context.Context, appUUID, provider string
 func (c *Client) DeleteOAuthConfig(ctx context.Context, appUUID, provider string) error {
 	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/oauth-configs/" + url.PathEscape(provider)
 	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+// ----- OAuth refresh -----
+
+// RefreshOAuthConnection refreshes the stored access token using the saved refresh token.
+// POST /v1/oauth/connections/{provider}/refresh
+func (c *Client) RefreshOAuthConnection(ctx context.Context, provider string) (*OAuthRefreshResponse, error) {
+	path := "/v1/oauth/connections/" + url.PathEscape(provider) + "/refresh"
+	var out OAuthRefreshResponse
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Email -----
+
+// SendEmail sends a transactional email via the org's configured email provider.
+// POST /api/email/send
+func (c *Client) SendEmail(ctx context.Context, req SendEmailRequest) (*SendEmailResponse, error) {
+	var out SendEmailResponse
+	if err := c.do(ctx, http.MethodPost, "/api/email/send", req, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ===== App-scoped: WebAuthn relying-party config admin =====

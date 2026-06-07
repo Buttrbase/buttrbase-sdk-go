@@ -286,11 +286,10 @@ func TestRedeemGiftCard_Error(t *testing.T) {
 func TestSendMagicLink_HappyPath(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
-		assertPath(t, r, "/v1/magic-link/send")
-		assertAuth(t, r)
+		assertPath(t, r, "/api/auth/magic-link/send")
 		writeJSON(w, 200, MagicLinkSend{Sent: true, Email: "user@example.com"})
 	})
-	res, err := c.SendMagicLink(context.Background(), "user@example.com", nil)
+	res, err := c.SendMagicLink(context.Background(), "app-uuid-1", "user@example.com", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,8 +303,8 @@ func TestSendMagicLink_WithOptions(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body["redirect_url"] == nil {
-			t.Error("expected redirect_url in body")
+		if body["redirect_to"] == nil {
+			t.Error("expected redirect_to in body")
 		}
 		if body["ttl_seconds"] == nil {
 			t.Error("expected ttl_seconds in body")
@@ -313,7 +312,7 @@ func TestSendMagicLink_WithOptions(t *testing.T) {
 		writeJSON(w, 200, MagicLinkSend{Sent: true})
 	})
 	opts := &SendMagicLinkOptions{RedirectURL: "https://example.com/callback", TTLSeconds: &ttl}
-	_, err := c.SendMagicLink(context.Background(), "user@example.com", opts)
+	_, err := c.SendMagicLink(context.Background(), "app-uuid-1", "user@example.com", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +322,7 @@ func TestSendMagicLink_Error(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, map[string]any{"detail": "invalid email"})
 	})
-	_, err := c.SendMagicLink(context.Background(), "bad-email", nil)
+	_, err := c.SendMagicLink(context.Background(), "app-uuid-1", "bad-email", nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -335,8 +334,7 @@ func TestVerifyMagicLink_HappyPath(t *testing.T) {
 	userID := 99
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
-		assertPath(t, r, "/v1/magic-link/verify")
-		assertAuth(t, r)
+		assertPath(t, r, "/api/auth/magic-link/verify")
 		writeJSON(w, 200, MagicLinkVerify{Valid: true, Email: "user@example.com", UserID: &userID})
 	})
 	res, err := c.VerifyMagicLink(context.Background(), "some-token")
@@ -1283,7 +1281,7 @@ func TestInviteAccept_Error(t *testing.T) {
 func TestCheckOrgName_HappyPath(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
-		assertPath(t, r, "/api/auth/orgs/check")
+		assertPath(t, r, "/api/auth/check-org-name")
 		if r.URL.Query().Get("name") != "acme" {
 			t.Errorf("expected name=acme, got %q", r.URL.Query().Get("name"))
 		}
@@ -1313,7 +1311,7 @@ func TestCheckOrgName_Error(t *testing.T) {
 func TestGetSuperuserFlag_HappyPath(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
-		assertPath(t, r, "/api/auth/superuser")
+		assertPath(t, r, "/api/admin/superuser")
 		assertAuth(t, r)
 		if r.URL.Query().Get("email") != "admin@example.com" {
 			t.Errorf("expected email=admin@example.com, got %q", r.URL.Query().Get("email"))
