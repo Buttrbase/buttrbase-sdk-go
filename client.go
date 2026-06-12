@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const defaultBaseURL = "https://api.buttrbase.com"
@@ -433,6 +435,8 @@ func (c *Client) ResetSandbox(ctx context.Context, req *SandboxResetRequest) (*S
 //
 // appUUID identifies the target app — this replaces the legacy `app`
 // slug parameter, which the backend no longer accepts.
+//
+// Deprecated: Use the 0.3.0 flow instead: SendOTP → VerifyOTP → FinalizeRegistration.
 func (c *Client) Register(ctx context.Context, appUUID, email, password, orgName string, opts *RegisterOptions) (*LoginResponse, error) {
 	body := map[string]any{"app_uuid": appUUID, "email": email, "password": password, "org_name": orgName}
 	if opts != nil {
@@ -1628,6 +1632,103 @@ func (c *Client) CheckOrgName(ctx context.Context, name string) (*OrgCheckRespon
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ===== 0.3.0 registration flow =====
+
+// SendOTP sends a one-time password to the given email for the app.
+// POST /api/v1/auth/otp/send
+// The flow is: SendOTP → VerifyOTP → FinalizeRegistration.
+func (c *Client) SendOTP(ctx context.Context, email string, appUUID uuid.UUID) error {
+	body := map[string]any{"email": email, "app_uuid": appUUID}
+	return c.do(ctx, http.MethodPost, "/api/v1/auth/otp/send", body, false, nil)
+}
+
+// VerifyOTP verifies an email OTP and returns a token pair.
+// POST /api/v1/auth/otp/verify
+// The Token field of the response is the signup_token for FinalizeRegistration.
+func (c *Client) VerifyOTP(ctx context.Context, email, otp string, appUUID uuid.UUID) (*TokenPair, error) {
+	body := map[string]any{"email": email, "otp": otp, "app_uuid": appUUID}
+	var out TokenPair
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/otp/verify", body, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CheckOrgNameV2 checks whether an org name is available.
+// POST /api/v1/auth/check-org-name
+// Returns available, normalized form, and reason if unavailable.
+func (c *Client) CheckOrgNameV2(ctx context.Context, name string) (*CheckOrgNameResponse, error) {
+	var out CheckOrgNameResponse
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/check-org-name", map[string]any{"name": name}, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// FinalizeRegistration completes user registration after OTP verification.
+// POST /api/v1/auth/finalize-registration
+// req.SignupToken must be the Token from VerifyOTP.
+func (c *Client) FinalizeRegistration(ctx context.Context, req FinalizeRegistrationRequest) (*TokenPair, error) {
+	var out TokenPair
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/finalize-registration", req, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateInvitation creates an org invitation (app-level auth).
+// POST /api/v1/organizations/{orgUUID}/invitations
+// The plaintext Token in the response is shown once.
+func (c *Client) CreateInvitation(ctx context.Context, orgUUID uuid.UUID, req CreateInvitationRequest) (*InvitationResponse, error) {
+	var out InvitationResponse
+	path := fmt.Sprintf("/api/v1/organizations/%s/invitations", orgUUID)
+	if err := c.do(ctx, http.MethodPost, path, req, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PreviewInvitation fetches a public invitation preview by token (no auth).
+// GET /api/v1/invitations/{token}/preview
+func (c *Client) PreviewInvitation(ctx context.Context, token string) (*InvitationPreview, error) {
+	var out InvitationPreview
+	path := fmt.Sprintf("/api/v1/invitations/%s/preview", url.PathEscape(token))
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AcceptInvitation accepts an org invitation for an already-authenticated user.
+// POST /api/v1/invitations/{token}/accept
+// Brand-new users should use FinalizeRegistration with OrgChoice.AcceptInvite instead.
+func (c *Client) AcceptInvitation(ctx context.Context, token string) (*AcceptInvitationResponse, error) {
+	var out AcceptInvitationResponse
+	path := fmt.Sprintf("/api/v1/invitations/%s/accept", url.PathEscape(token))
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListInvitations lists all invitations for an org.
+// GET /api/v1/organizations/{orgUUID}/invitations
+func (c *Client) ListInvitations(ctx context.Context, orgUUID uuid.UUID) ([]InvitationListItem, error) {
+	var out []InvitationListItem
+	path := fmt.Sprintf("/api/v1/organizations/%s/invitations", orgUUID)
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RevokeInvitation revokes a pending invitation by its integer ID.
+// DELETE /api/v1/organizations/{orgUUID}/invitations/{invitationID}
+func (c *Client) RevokeInvitation(ctx context.Context, orgUUID uuid.UUID, invitationID int) error {
+	path := fmt.Sprintf("/api/v1/organizations/%s/invitations/%d", orgUUID, invitationID)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
 }
 
 func (c *Client) GetSuperuserFlag(ctx context.Context, email string) (*SuperuserResponse, error) {
