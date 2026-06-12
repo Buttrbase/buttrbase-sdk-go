@@ -925,11 +925,26 @@ type SendEmailResponse struct {
 
 // ----- 0.3.0 registration flow -----
 
-// TokenPair is the response from VerifyOTP and FinalizeRegistration.
+// TokenPair is the response from VerifyOTP.
 type TokenPair struct {
 	Token        string  `json:"token"`
 	RefreshToken *string `json:"refresh_token,omitempty"`
 	UserUUID     *string `json:"user_uuid,omitempty"`
+}
+
+// RegistrationResult is returned by FinalizeRegistration and Register.
+// Full signup flow: SendOTP → VerifyOTP (get signup_token) → FinalizeRegistration
+type RegistrationResult struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    *int64 `json:"expires_in,omitempty"`
+	UserUUID     string `json:"user_uuid"`
+	// UUID of the org that was created or joined.
+	OrgUUID string `json:"org_uuid"`
+	// Role the user holds in that org ("admin" for new orgs, or whatever the invitation granted).
+	Role    string  `json:"role"`
+	Message *string `json:"message,omitempty"`
 }
 
 // OrgChoiceType distinguishes between creating a new org and accepting an invite.
