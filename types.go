@@ -3,6 +3,8 @@ package buttrbase
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ValidateCouponOptions holds optional parameters for ValidateCoupon.
@@ -919,4 +921,92 @@ type SendEmailResponse struct {
 	Provider  string `json:"provider"`
 	Message   string `json:"message,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
+}
+
+// ----- 0.3.0 registration flow -----
+
+// TokenPair is the response from VerifyOTP and FinalizeRegistration.
+type TokenPair struct {
+	Token        string  `json:"token"`
+	RefreshToken *string `json:"refresh_token,omitempty"`
+	UserUUID     *string `json:"user_uuid,omitempty"`
+}
+
+// OrgChoiceType distinguishes between creating a new org and accepting an invite.
+type OrgChoiceType string
+
+const (
+	OrgChoiceCreate       OrgChoiceType = "create"
+	OrgChoiceAcceptInvite OrgChoiceType = "accept_invite"
+)
+
+// OrgChoice selects the org action during registration.
+type OrgChoice struct {
+	Type            OrgChoiceType `json:"type"`
+	Name            string        `json:"name,omitempty"`             // for OrgChoiceCreate
+	InvitationToken string        `json:"invitation_token,omitempty"` // for OrgChoiceAcceptInvite
+}
+
+// FinalizeRegistrationRequest is the body for FinalizeRegistration.
+type FinalizeRegistrationRequest struct {
+	Email       string    `json:"email"`
+	Password    string    `json:"password"`
+	AppUUID     uuid.UUID `json:"app_uuid"`
+	SignupToken string    `json:"signup_token"`
+	OrgChoice   OrgChoice `json:"org_choice"`
+	FirstName   string    `json:"first_name,omitempty"`
+	LastName    string    `json:"last_name,omitempty"`
+}
+
+// CheckOrgNameResponse is the response from CheckOrgNameV2.
+type CheckOrgNameResponse struct {
+	Available  bool   `json:"available"`
+	Reason     string `json:"reason,omitempty"`
+	Normalized string `json:"normalized"`
+}
+
+// CreateInvitationRequest is the body for CreateInvitation.
+type CreateInvitationRequest struct {
+	Email          string `json:"email,omitempty"`
+	Role           string `json:"role,omitempty"`
+	ExpiresInHours *int   `json:"expires_in_hours,omitempty"`
+}
+
+// InvitationResponse is returned by CreateInvitation.
+type InvitationResponse struct {
+	ID        int       `json:"id"`
+	OrgUUID   uuid.UUID `json:"org_uuid"`
+	Email     *string   `json:"email,omitempty"`
+	Role      string    `json:"role"`
+	ExpiresAt string    `json:"expires_at"`
+	Token     string    `json:"token"`
+	SignupURL string    `json:"signup_url"`
+}
+
+// InvitationPreview is returned by PreviewInvitation.
+type InvitationPreview struct {
+	OrgUUID       uuid.UUID `json:"org_uuid"`
+	OrgName       string    `json:"org_name"`
+	Email         *string   `json:"email,omitempty"`
+	Role          string    `json:"role"`
+	ExpiresAt     string    `json:"expires_at"`
+	Valid         bool      `json:"valid"`
+	InvalidReason *string   `json:"invalid_reason,omitempty"`
+}
+
+// AcceptInvitationResponse is returned by AcceptInvitation.
+type AcceptInvitationResponse struct {
+	OrgUUID uuid.UUID `json:"org_uuid"`
+	OrgName string    `json:"org_name"`
+	Role    string    `json:"role"`
+}
+
+// InvitationListItem is one entry in the list from ListInvitations.
+type InvitationListItem struct {
+	ID         int     `json:"id"`
+	Email      *string `json:"email,omitempty"`
+	Role       string  `json:"role"`
+	ExpiresAt  string  `json:"expires_at"`
+	AcceptedAt *string `json:"accepted_at,omitempty"`
+	RevokedAt  *string `json:"revoked_at,omitempty"`
 }
