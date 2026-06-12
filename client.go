@@ -1670,8 +1670,8 @@ func (c *Client) CheckOrgNameV2(ctx context.Context, name string) (*CheckOrgName
 // FinalizeRegistration completes user registration after OTP verification.
 // POST /api/v1/auth/finalize-registration
 // req.SignupToken must be the Token from VerifyOTP.
-func (c *Client) FinalizeRegistration(ctx context.Context, req FinalizeRegistrationRequest) (*TokenPair, error) {
-	var out TokenPair
+func (c *Client) FinalizeRegistration(ctx context.Context, req FinalizeRegistrationRequest) (*RegistrationResult, error) {
+	var out RegistrationResult
 	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/finalize-registration", req, false, &out); err != nil {
 		return nil, err
 	}
