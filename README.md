@@ -140,6 +140,35 @@ oidcURL, err := client.OidcAuthorizeURL(ctx, "connection-uuid")
 samlURL, err := client.SamlAuthorizeURL(ctx, "connection-uuid")
 ```
 
+### Windowed scope re-mint (scope-context)
+
+Re-mint the caller's access token windowed to an explicit, gate-checked scope
+subset (least-privilege "windowed" strategy). The caller must already hold a
+valid access token; the granted set is always a subset of their effective
+scopes. Only the access token is re-minted (the refresh token is unchanged).
+
+```go
+res, err := client.ScopeContext(ctx, buttrbase.ScopeContextRequest{
+    RequestedScopes: []string{"orders:read", "orders:write"},
+})
+fmt.Println(res.Token)  // freshly minted, windowed access token
+fmt.Println(res.Scopes) // deduped, sorted granted set
+```
+
+### Tenant home discovery (public)
+
+Resolve an active tenant's public routing info for an org (and optionally an
+app) so a client can target it directly. Returns a 404 error for unknown or
+non-active tenants. No bearer token required.
+
+```go
+home, err := client.GetTenantHome(ctx, "org-uuid", nil) // omit app_id
+fmt.Println(home.TenancyMode)
+if home.HomeBaseURL != nil {
+    fmt.Println(*home.HomeBaseURL)
+}
+```
+
 ## MFA / TOTP
 
 ```go
@@ -180,6 +209,20 @@ _, err = client.OrgRevokeAllSessions(ctx, "org-uuid")
 
 accounts, err := client.ListDeviceAccounts(ctx, "device-uuid")
 _, err = client.SwitchDeviceActiveAccount(ctx, "device-uuid", "account-uuid")
+```
+
+The signed-in end user can list and revoke their own registered device keys
+(public-safe fields only; no private key material). Requires a bearer token.
+
+```go
+devices, err := client.ListDevices(ctx)
+for _, d := range devices {
+    fmt.Println(d.DeviceUUID, d.JKT)
+}
+
+// Revoke one by its device UUID (owner check enforced server-side):
+res, err := client.RevokeDevice(ctx, devices[0].DeviceUUID)
+fmt.Println(res.Revoked)
 ```
 
 ## API Keys v2 (org-scoped, legacy)
