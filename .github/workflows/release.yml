@@ -20,4 +20,4 @@ jobs:
       - run: |
           # Warm the Go module proxy so `go get` finds the new version
           # immediately rather than waiting for the proxy's polling cycle.
-          curl -sfI "https://proxy.golang.org/github.com/buttrbase/buttrbase-go/@v/$GITHUB_REF_NAME.info" || true
+          curl -sfI "https://proxy.golang.org/github.com/buttrbase/buttrbase-sdk-go/@v/$GITHUB_REF_NAME.info" || true

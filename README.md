@@ -13,7 +13,7 @@ The official Go SDK for ButtrBase. Standard `net/http`-based client covering eve
 ## Installation
 
 ```bash
-go get github.com/buttrbase/buttrbase-go
+go get github.com/buttrbase/buttrbase-sdk-go
 ```
 
 ## Quick Start
@@ -24,7 +24,7 @@ package main
 import (
     "context"
     "fmt"
-    buttrbase "github.com/buttrbase/buttrbase-go"
+    buttrbase "github.com/buttrbase/buttrbase-sdk-go"
 )
 
 func main() {

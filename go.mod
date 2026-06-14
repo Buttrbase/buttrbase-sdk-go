@@ -1,4 +1,4 @@
-module github.com/buttrbase/buttrbase-go
+module github.com/buttrbase/buttrbase-sdk-go
 
 go 1.21
 
