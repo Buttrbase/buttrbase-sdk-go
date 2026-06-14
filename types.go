@@ -238,6 +238,73 @@ type SandboxResetResponse struct {
 	Raw     map[string]any `json:"-"`
 }
 
+// ----- Scope context (windowed / JIT scope re-mint) -----
+
+// ScopeContextRequest is the body for ScopeContext
+// (POST /api/app/auth/scope-context). RequestedScopes is the explicit scope
+// list the caller wants windowed into a fresh access token; the granted set is
+// always a subset of the caller's effective scopes and each scope is run
+// through the scope-gate (step-up) machinery server-side.
+type ScopeContextRequest struct {
+	RequestedScopes []string `json:"requested_scopes"`
+}
+
+// ScopeContextResponse is the response from ScopeContext. Token is the freshly
+// minted, windowed access token; Scopes is the deduplicated, sorted set of
+// scopes actually granted (and embedded as the token's data.scopes claim).
+//
+// Note: the backend re-mints only the access token — the refresh token is
+// unchanged — and the response carries no separate expiry field; the access
+// token's lifetime is encoded in its exp claim.
+type ScopeContextResponse struct {
+	Token  string   `json:"token"`
+	Scopes []string `json:"scopes"`
+}
+
+// ----- Devices (end-user self-service) -----
+
+// Device is a single registered device key, public-safe (no private key
+// material beyond the public JWK thumbprint). Mirrors the backend DeviceItem.
+type Device struct {
+	DeviceUUID string     `json:"device_uuid"`
+	JKT        string     `json:"jkt"`
+	Label      *string    `json:"label"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+}
+
+// deviceList wraps the {"data": [...]} envelope returned by GET /api/app/devices.
+type deviceList struct {
+	Data []Device `json:"data"`
+}
+
+// RevokeDeviceResponse is the inner data of the response from RevokeDevice
+// (POST /api/app/devices/{device_uuid}/revoke).
+type RevokeDeviceResponse struct {
+	DeviceUUID string `json:"device_uuid"`
+	Revoked    bool   `json:"revoked"`
+}
+
+// revokeDeviceEnvelope wraps the {"data": {...}} envelope from RevokeDevice.
+type revokeDeviceEnvelope struct {
+	Data RevokeDeviceResponse `json:"data"`
+}
+
+// ----- Tenant home (public discovery) -----
+
+// TenantHome is the public routing info for an active tenant, returned by
+// GetTenantHome (GET /api/tenant/home). HomeRegion and HomeBaseURL are nullable.
+type TenantHome struct {
+	TenancyMode string  `json:"tenancy_mode"`
+	HomeRegion  *string `json:"home_region"`
+	HomeBaseURL *string `json:"home_base_url"`
+}
+
+// tenantHomeEnvelope wraps the {"data": {...}} envelope from GET /api/tenant/home.
+type tenantHomeEnvelope struct {
+	Data TenantHome `json:"data"`
+}
+
 // ----- Auth / Profile -----
 
 // RegisterOptions holds optional parameters for Register.

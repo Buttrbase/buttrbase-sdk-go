@@ -2166,5 +2166,72 @@ func (c *Client) DeleteMyPasskey(ctx context.Context, credentialUUID string) err
 	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
 }
 
+// ----- Scope context (windowed / JIT scope re-mint) -----
+
+// ScopeContext re-mints the caller's access token windowed to an explicit,
+// gate-checked scope subset (least-privilege "windowed" strategy). The caller
+// must already hold a valid access token; the granted set is always a subset of
+// the caller's effective scopes. Requires a bearer token.
+//
+// POST /api/app/auth/scope-context
+func (c *Client) ScopeContext(ctx context.Context, req ScopeContextRequest) (*ScopeContextResponse, error) {
+	var out ScopeContextResponse
+	if err := c.do(ctx, http.MethodPost, "/api/app/auth/scope-context", req, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ----- Devices (end-user self-service) -----
+
+// ListDevices returns the caller's active (non-revoked) device keys, descending
+// by CreatedAt. Only public-safe fields are returned. Requires a bearer token.
+//
+// GET /api/app/devices
+func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
+	var out deviceList
+	if err := c.do(ctx, http.MethodGet, "/api/app/devices", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// RevokeDevice soft-revokes a device the caller owns, by its device UUID. The
+// ownership check is enforced server-side; a device owned by another user (or
+// that does not exist / is already revoked) returns 404. Requires a bearer
+// token.
+//
+// POST /api/app/devices/{device_uuid}/revoke
+func (c *Client) RevokeDevice(ctx context.Context, deviceUUID string) (*RevokeDeviceResponse, error) {
+	var out revokeDeviceEnvelope
+	path := "/api/app/devices/" + url.PathEscape(deviceUUID) + "/revoke"
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
+}
+
+// ----- Tenant home (public discovery) -----
+
+// GetTenantHome resolves an active tenant's public home (routing info) for the
+// given org and app, so a client can target it directly. appID is optional;
+// pass nil to omit the app_id query parameter. Returns a 404 ButtrbaseError if
+// no active tenant home exists for the org/app. Public — no bearer token.
+//
+// GET /api/tenant/home?org_uuid=&app_id=
+func (c *Client) GetTenantHome(ctx context.Context, orgUUID string, appID *int) (*TenantHome, error) {
+	q := url.Values{}
+	q.Set("org_uuid", orgUUID)
+	if appID != nil {
+		q.Set("app_id", strconv.Itoa(*appID))
+	}
+	path := "/api/tenant/home?" + q.Encode()
+	var out tenantHomeEnvelope
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
+}
+
 // ensure strconv stays used (helper for callers building queries).
 var _ = strconv.Itoa
