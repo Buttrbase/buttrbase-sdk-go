@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,11 +19,29 @@ import (
 
 const defaultBaseURL = "https://api.buttrbase.com"
 
+const (
+	// defaultMaxRetries is the default number of retry attempts for transient
+	// failures (in addition to the initial attempt).
+	defaultMaxRetries = 3
+	// defaultRetryBaseDelay is the base delay for exponential backoff.
+	defaultRetryBaseDelay = 500 * time.Millisecond
+	// maxRetryDelay caps the per-attempt backoff delay.
+	maxRetryDelay = 4 * time.Second
+)
+
 // Client is the Buttrbase API client.
 type Client struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
+
+	// MaxRetries is the number of times a request is retried on transient
+	// failures (HTTP 429/502/503/504 and transport errors). 0 disables retries.
+	// Defaults to defaultMaxRetries.
+	MaxRetries int
+	// RetryBaseDelay is the base delay for exponential backoff with jitter.
+	// Defaults to defaultRetryBaseDelay.
+	RetryBaseDelay time.Duration
 }
 
 // Option configures a Client.
@@ -33,65 +53,180 @@ func WithBaseURL(u string) Option { return func(c *Client) { c.BaseURL = u } }
 // WithHTTPClient overrides the HTTP client.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.HTTPClient = h } }
 
+// WithMaxRetries overrides the number of retry attempts for transient
+// failures. Set to 0 to disable retries.
+func WithMaxRetries(n int) Option { return func(c *Client) { c.MaxRetries = n } }
+
+// WithRetryBaseDelay overrides the base delay used for exponential backoff.
+func WithRetryBaseDelay(d time.Duration) Option {
+	return func(c *Client) { c.RetryBaseDelay = d }
+}
+
 // New creates a new Client.
 func New(apiKey string, opts ...Option) *Client {
 	c := &Client{
-		BaseURL:    defaultBaseURL,
-		APIKey:     apiKey,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		BaseURL:        defaultBaseURL,
+		APIKey:         apiKey,
+		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
+		MaxRetries:     defaultMaxRetries,
+		RetryBaseDelay: defaultRetryBaseDelay,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	if c.RetryBaseDelay <= 0 {
+		c.RetryBaseDelay = defaultRetryBaseDelay
+	}
 	return c
 }
 
+// isRetryableStatus reports whether an HTTP status code indicates a transient
+// failure that is safe to retry. 502/503/504 are gateway/cold-start errors
+// (the app never processed the request, so retrying is safe for any method,
+// including POST). 429 is rate limiting.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, // 429
+		http.StatusBadGateway,         // 502
+		http.StatusServiceUnavailable, // 503
+		http.StatusGatewayTimeout:     // 504
+		return true
+	default:
+		return false
+	}
+}
+
+// retryDelay computes the backoff for the given attempt (0-indexed), honoring a
+// Retry-After header if present. resp may be nil (transport error).
+func (c *Client) retryDelay(attempt int, resp *http.Response) time.Duration {
+	if resp != nil {
+		if d, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+			return d
+		}
+	}
+	// Exponential backoff: base * 2^attempt, capped, with full jitter.
+	backoff := float64(c.RetryBaseDelay) * math.Pow(2, float64(attempt))
+	if backoff > float64(maxRetryDelay) {
+		backoff = float64(maxRetryDelay)
+	}
+	// Full jitter in [backoff/2, backoff].
+	half := backoff / 2
+	return time.Duration(half + rand.Float64()*half)
+}
+
+// parseRetryAfter parses a Retry-After header value, which may be either a
+// number of seconds or an HTTP-date.
+func parseRetryAfter(v string) (time.Duration, bool) {
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+// sleepCtx waits for d or until ctx is done, whichever comes first. It returns
+// ctx.Err() if the context was cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, auth bool, out any) error {
-	var rdr io.Reader
+	// Buffer the body once so it can be re-read on every retry attempt; a
+	// fresh reader is set per attempt below (otherwise retries would send an
+	// empty body).
+	var bodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		rdr = bytes.NewReader(b)
+		bodyBytes = b
 	}
 	u := c.BaseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if auth && c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		detail := ""
-		var parsed map[string]any
-		if json.Unmarshal(respBody, &parsed) == nil {
-			if d, ok := parsed["detail"].(string); ok {
-				detail = d
+
+	for attempt := 0; ; attempt++ {
+		var rdr io.Reader
+		if bodyBytes != nil {
+			rdr = bytes.NewReader(bodyBytes)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, u, rdr)
+		if err != nil {
+			return err
+		}
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Accept", "application/json")
+		if auth && c.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			// Transport error: retry if attempts remain and ctx not done.
+			if attempt < c.MaxRetries && ctx.Err() == nil {
+				if serr := sleepCtx(ctx, c.retryDelay(attempt, nil)); serr != nil {
+					return err
+				}
+				continue
+			}
+			return err
+		}
+
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			detail := ""
+			var parsed map[string]any
+			if json.Unmarshal(respBody, &parsed) == nil {
+				if d, ok := parsed["detail"].(string); ok {
+					detail = d
+				}
+			}
+			apiErr := &ButtrbaseError{StatusCode: resp.StatusCode, Detail: detail, Body: respBody}
+			// Retry only on transient/cold-start statuses.
+			if isRetryableStatus(resp.StatusCode) && attempt < c.MaxRetries {
+				if serr := sleepCtx(ctx, c.retryDelay(attempt, resp)); serr != nil {
+					return apiErr
+				}
+				continue
+			}
+			return apiErr
+		}
+
+		if out != nil && len(respBody) > 0 {
+			if err := json.Unmarshal(respBody, out); err != nil {
+				return fmt.Errorf("buttrbase: decode response: %w", err)
 			}
 		}
-		return &ButtrbaseError{StatusCode: resp.StatusCode, Detail: detail, Body: respBody}
+		return nil
 	}
-	if out != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, out); err != nil {
-			return fmt.Errorf("buttrbase: decode response: %w", err)
-		}
-	}
-	return nil
 }
 
 // ----- Coupons -----
