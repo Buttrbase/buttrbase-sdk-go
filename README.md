@@ -28,7 +28,10 @@ import (
 )
 
 func main() {
-    client := buttrbase.New("bb_live_...")
+    // App-server auth uses an OAuth2 client-credentials access token.
+    // Exchange your client_id/client_secret for an access token out-of-band,
+    // then construct the client with that bearer token.
+    client := buttrbase.New("<oauth2-access-token>")
     ctx := context.Background()
 
     appUUID := "018f1234-5678-7000-8000-000000000001"
@@ -72,15 +75,31 @@ _, err := client.OtpSend(ctx, appUUID, "+15551234567")
 resp, err := client.OtpVerify(ctx, appUUID, "+15551234567", "123456")
 ```
 
-### API Key Exchange
+### App-server auth (OAuth2 client-credentials)
+
+App servers authenticate with an OAuth2 **client-credentials** access token —
+the single supported app-server credential. Static API keys (the retired
+`wb_live_`/`wb_test_` keys and the `api-key/exchange` endpoint) are no longer
+supported.
+
+Provision a `client_id`/`client_secret` pair with `CreateCredential`, exchange
+it for an access token via the OAuth2 token endpoint, then construct the client
+with the resulting bearer token:
 
 ```go
-// Trade a raw app API key for an access/refresh pair.
-pair, err := client.ExchangeAPIKey(ctx, "wb_live_xa9dBz...")
-// raw_key is no longer needed; store pair.RefreshToken for renewal.
+// Manage client-credentials (client_id / client_secret) pairs.
+cred, err := client.CreateCredential(ctx, buttrbase.CreateCredentialRequest{
+    Name: "production-server",
+})
+fmt.Println(cred.ClientID, cred.ClientSecret) // secret shown once — persist it
 
-// Renew before pair.AccessExpiresAt elapses — the old refresh is revoked.
-fresh, err := client.ExchangeRefreshToken(ctx, pair.RefreshToken)
+// Rotate or revoke as needed.
+rotated, err := client.RotateCredentialSecret(ctx, cred.CredentialsID)
+err = client.DeleteCredential(ctx, cred.CredentialsID)
+
+// Exchange client_id/client_secret for an access token (OAuth2
+// client-credentials grant), then:
+appClient := buttrbase.New("<oauth2-access-token>")
 ```
 
 ### OAuth Start URL
@@ -186,7 +205,7 @@ _, err = client.MfaTotpDisable(ctx)
 
 ```go
 resp, err := client.AuthStepUp(ctx, "totp-code", false)
-// client.APIKey is auto-replaced with the elevated token
+// client.AccessToken is auto-replaced with the elevated token
 ```
 
 ## Organization Security
@@ -225,46 +244,6 @@ res, err := client.RevokeDevice(ctx, devices[0].DeviceUUID)
 fmt.Println(res.Revoked)
 ```
 
-## API Keys v2 (org-scoped, legacy)
-
-```go
-keys, err := client.ListAPIKeysV2(ctx)
-newKey, err := client.CreateAPIKeyV2(ctx, map[string]any{"name": "my-api-key"})
-err = client.DeleteAPIKeyV2(ctx, "key-id")
-```
-
-## App-Level API Keys
-
-```go
-appUUID := "018f1234-5678-7000-8000-000000000001"
-
-// List
-keys, err := client.ListAppAPIKeys(ctx, appUUID)
-
-// Create — raw_key is shown ONCE; persist it before this call returns.
-created, err := client.CreateAppAPIKey(ctx, appUUID, buttrbase.CreateAPIKeyInput{
-    Name:    "production-server",
-    Env:     buttrbase.APIKeyEnvLive,
-    KeyType: buttrbase.APIKeyTypeShortLived,
-})
-fmt.Println("save now — never shown again:", created.RawKey)
-
-// Expiring key
-inDays := 30
-expiring, err := client.CreateAppAPIKey(ctx, appUUID, buttrbase.CreateAPIKeyInput{
-    Name:    "contractor",
-    Env:     buttrbase.APIKeyEnvLive,
-    KeyType: buttrbase.APIKeyTypeExpiring,
-    Expiry:  &buttrbase.ExpiryInput{InDays: &inDays},
-})
-
-// Rotate (same name/type/env; old key is revoked)
-rotated, err := client.RotateAppAPIKey(ctx, appUUID, created.KeyUUID)
-
-// Revoke (idempotent)
-err = client.RevokeAppAPIKey(ctx, appUUID, created.KeyUUID)
-```
-
 ## App-Level OAuth Provider Configs
 
 ```go
@@ -293,7 +272,7 @@ err = client.DeleteOAuthConfig(ctx, appUUID, "google")
 ```go
 rows, err := client.ReadAuditLog(ctx, appUUID, buttrbase.AuditLogQuery{
     Limit:        500,
-    ActionPrefix: "api_key.",
+    ActionPrefix: "oauth_config.",
 })
 for _, row := range rows {
     fmt.Println(row.CreatedAt, row.Action, row.TargetID)
@@ -398,7 +377,7 @@ Non-2xx responses return `*ButtrbaseError` with `StatusCode`, `Detail`, and `Bod
 ### Complete Onboarding
 
 ```go
-client := buttrbase.New("bb_live_...")
+client := buttrbase.New("<oauth2-access-token>")
 ctx := context.Background()
 
 appUUID := "018f1234-5678-7000-8000-000000000001"

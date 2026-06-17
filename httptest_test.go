@@ -16,7 +16,7 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *C
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	c := New("test-api-key", WithBaseURL(srv.URL))
+	c := New("test-token", WithBaseURL(srv.URL))
 	return srv, c
 }
 
@@ -29,8 +29,8 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func assertAuth(t *testing.T, r *http.Request) {
 	t.Helper()
 	auth := r.Header.Get("Authorization")
-	if auth != "Bearer test-api-key" {
-		t.Errorf("expected Authorization 'Bearer test-api-key', got %q", auth)
+	if auth != "Bearer test-token" {
+		t.Errorf("expected Authorization 'Bearer test-token', got %q", auth)
 	}
 }
 
@@ -51,9 +51,9 @@ func assertPath(t *testing.T, r *http.Request, path string) {
 // ---- New / WithHTTPClient / WithBaseURL ----
 
 func TestNew_Defaults(t *testing.T) {
-	c := New("my-key")
-	if c.APIKey != "my-key" {
-		t.Errorf("expected APIKey 'my-key', got %q", c.APIKey)
+	c := New("my-token")
+	if c.AccessToken != "my-token" {
+		t.Errorf("expected AccessToken 'my-token', got %q", c.AccessToken)
 	}
 	if c.BaseURL != defaultBaseURL {
 		t.Errorf("expected base URL %q, got %q", defaultBaseURL, c.BaseURL)
@@ -605,9 +605,9 @@ func TestAuthStepUp_HappyPath(t *testing.T) {
 	if res.AccessToken != "elevated-token" {
 		t.Errorf("expected elevated-token, got %q", res.AccessToken)
 	}
-	// Verify the client's API key was updated
-	if c.APIKey != "elevated-token" {
-		t.Errorf("expected client APIKey to be updated to elevated-token, got %q", c.APIKey)
+	// Verify the client's access token was updated
+	if c.AccessToken != "elevated-token" {
+		t.Errorf("expected client AccessToken to be updated to elevated-token, got %q", c.AccessToken)
 	}
 }
 
@@ -615,14 +615,14 @@ func TestAuthStepUp_NoToken(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, StepUpResponse{TokenType: "Bearer", ExpiresInSeconds: 300})
 	})
-	originalKey := c.APIKey
+	originalKey := c.AccessToken
 	_, err := c.AuthStepUp(context.Background(), "123456", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Key should not change if no access_token returned
-	if c.APIKey != originalKey {
-		t.Errorf("expected API key to remain %q, got %q", originalKey, c.APIKey)
+	// Token should not change if no access_token returned
+	if c.AccessToken != originalKey {
+		t.Errorf("expected access token to remain %q, got %q", originalKey, c.AccessToken)
 	}
 }
 
@@ -1496,7 +1496,7 @@ func TestDo_ReadBodyError(t *testing.T) {
 
 // Test json.Marshal failure by passing an un-marshalable body directly via do.
 // We can't easily pass a channel via the public API, so we call do indirectly.
-// Instead, we test json.Marshal with the auth=false path that has no APIKey check.
+// Instead, we test json.Marshal with the auth=false path that has no AccessToken check.
 // We craft a scenario using a custom type that embeds a channel (un-marshallable).
 // Since do is unexported but in the same package (package buttrbase), we can call it directly.
 type badMarshal struct {

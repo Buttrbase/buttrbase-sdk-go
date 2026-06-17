@@ -31,8 +31,16 @@ const (
 
 // Client is the Buttrbase API client.
 type Client struct {
-	BaseURL    string
-	APIKey     string
+	BaseURL string
+
+	// AccessToken is the OAuth2 bearer token sent as `Authorization: Bearer`
+	// on authenticated requests. For app-server callers this is the access
+	// token obtained from the OAuth2 client-credentials grant (exchange your
+	// client_id/client_secret for a token, then construct the client with it).
+	// For end-user flows it is the access token returned by Login/VerifyOTP/etc.,
+	// which those methods refresh in place. Static API keys are no longer supported.
+	AccessToken string
+
 	HTTPClient *http.Client
 
 	// MaxRetries is the number of times a request is retried on transient
@@ -62,11 +70,18 @@ func WithRetryBaseDelay(d time.Duration) Option {
 	return func(c *Client) { c.RetryBaseDelay = d }
 }
 
-// New creates a new Client.
-func New(apiKey string, opts ...Option) *Client {
+// New creates a new Client authenticated with the given OAuth2 bearer
+// access token.
+//
+// App-server callers obtain accessToken from the OAuth2 client-credentials
+// grant (exchange your client_id/client_secret for an access token, then
+// pass it here). End-user callers may pass an empty string and authenticate
+// via Login/VerifyOTP/etc., which populate and refresh the token in place.
+// Static API keys (the retired wb_live_/wb_test_ keys) are no longer accepted.
+func New(accessToken string, opts ...Option) *Client {
 	c := &Client{
 		BaseURL:        defaultBaseURL,
-		APIKey:         apiKey,
+		AccessToken:    accessToken,
 		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
 		MaxRetries:     defaultMaxRetries,
 		RetryBaseDelay: defaultRetryBaseDelay,
@@ -179,8 +194,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, auth boo
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
-		if auth && c.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		if auth && c.AccessToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.AccessToken)
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -391,7 +406,7 @@ func (c *Client) AuthStepUp(ctx context.Context, code string, recovery bool) (*S
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -587,7 +602,7 @@ func (c *Client) Register(ctx context.Context, appUUID, email, password, orgName
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -607,7 +622,7 @@ func (c *Client) Login(ctx context.Context, appUUID, email, password, orgName st
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -683,7 +698,7 @@ func (c *Client) OtpVerify(ctx context.Context, appUUID, phone, code string) (*L
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -755,7 +770,7 @@ func (c *Client) OidcCallback(ctx context.Context, connectionUUID string, params
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -767,7 +782,7 @@ func (c *Client) SamlCallback(ctx context.Context, connectionUUID string, params
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -1005,27 +1020,6 @@ func (c *Client) RevokeAllSessions(ctx context.Context) (map[string]any, error) 
 		return nil, err
 	}
 	return out, nil
-}
-
-func (c *Client) ListAPIKeysV2(ctx context.Context) ([]map[string]any, error) {
-	var out []map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v2/api-keys", nil, true, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *Client) CreateAPIKeyV2(ctx context.Context, data map[string]any) (map[string]any, error) {
-	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/api/v2/api-keys", data, true, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *Client) DeleteAPIKeyV2(ctx context.Context, keyID string) error {
-	path := "/api/v2/api-keys/" + url.PathEscape(keyID)
-	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
 }
 
 func (c *Client) ListServiceIdentities(ctx context.Context, orgUUID string) ([]map[string]any, error) {
@@ -1755,7 +1749,7 @@ func (c *Client) InviteAccept(ctx context.Context, req InviteAcceptRequest) (*In
 		return nil, err
 	}
 	if out.AccessToken != "" {
-		c.APIKey = out.AccessToken
+		c.AccessToken = out.AccessToken
 	}
 	return &out, nil
 }
@@ -1899,37 +1893,6 @@ func (c *Client) GetClientIP(ctx context.Context) (*GeoResponse, error) {
 	return &out, nil
 }
 
-// ===== App-scoped: API key exchange =====
-
-// ExchangeAPIKey trades a raw app API key for a bearer access/refresh pair.
-// POST /api/v1/auth/api-key/exchange
-//
-// This endpoint is anonymous — no Authorization header is sent. The raw
-// key is sent in the request body exactly once; the response carries an
-// opaque base32 refresh token suitable for ExchangeRefreshToken.
-func (c *Client) ExchangeAPIKey(ctx context.Context, apiKey string) (*ExchangeResponse, error) {
-	body := map[string]any{"api_key": apiKey}
-	var out ExchangeResponse
-	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/api-key/exchange", body, false, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ExchangeRefreshToken trades an opaque refresh token for a fresh
-// access/refresh pair. The presented refresh token is revoked as a side
-// effect; the returned pair must replace the caller's stored tokens.
-//
-// POST /api/v1/auth/api-key/exchange (refresh_token mode)
-func (c *Client) ExchangeRefreshToken(ctx context.Context, refreshToken string) (*ExchangeResponse, error) {
-	body := map[string]any{"refresh_token": refreshToken}
-	var out ExchangeResponse
-	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/api-key/exchange", body, false, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // ----- Password reset -----
 
 // RequestPasswordReset sends a password-reset email for the given address.
@@ -1971,58 +1934,6 @@ func (c *Client) OAuthStartURL(provider OAuthProvider, appUUID string, returnTo 
 		q.Set("return_to", returnTo)
 	}
 	return c.BaseURL + "/api/v1/auth/oauth/" + url.PathEscape(string(provider)) + "/start?" + q.Encode()
-}
-
-// ===== App-scoped: API key admin =====
-
-// ListAppAPIKeys returns every API key issued for the app, including
-// revoked ones. Raw key material is never returned by this endpoint.
-//
-// GET /api/v1/apps/{app_uuid}/api-keys
-func (c *Client) ListAppAPIKeys(ctx context.Context, appUUID string) ([]APIKeySummary, error) {
-	var out []APIKeySummary
-	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys"
-	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// CreateAppAPIKey provisions a new API key for the app. The response's
-// RawKey field is the only time the secret is ever returned — the
-// caller is responsible for persisting it.
-//
-// POST /api/v1/apps/{app_uuid}/api-keys
-func (c *Client) CreateAppAPIKey(ctx context.Context, appUUID string, input CreateAPIKeyInput) (*CreatedKeyResponse, error) {
-	var out CreatedKeyResponse
-	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys"
-	if err := c.do(ctx, http.MethodPost, path, input, true, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// RevokeAppAPIKey marks an API key as revoked. Idempotent: revoking an
-// already-revoked key returns successfully without changing state.
-//
-// DELETE /api/v1/apps/{app_uuid}/api-keys/{key_uuid}
-func (c *Client) RevokeAppAPIKey(ctx context.Context, appUUID, keyUUID string) error {
-	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys/" + url.PathEscape(keyUUID)
-	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
-}
-
-// RotateAppAPIKey issues a replacement key with the same name, type,
-// and env as the original, then revokes the original. For expiring
-// keys the original expires_at is preserved.
-//
-// POST /api/v1/apps/{app_uuid}/api-keys/{key_uuid}/rotate
-func (c *Client) RotateAppAPIKey(ctx context.Context, appUUID, keyUUID string) (*CreatedKeyResponse, error) {
-	var out CreatedKeyResponse
-	path := "/api/v1/apps/" + url.PathEscape(appUUID) + "/api-keys/" + url.PathEscape(keyUUID) + "/rotate"
-	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
 }
 
 // ----- Webhooks (v1 API) -----
@@ -2188,7 +2099,7 @@ func (c *Client) UpdateAppRPConfig(ctx context.Context, appUUID string, patch Up
 
 // ReadAuditLog returns rows from the per-app security audit log,
 // newest first. The backend defaults limit to 200 and caps it at 1000.
-// ActionPrefix narrows by event family (e.g. "api_key.", "oauth_config.").
+// ActionPrefix narrows by event family (e.g. "oauth_config.", "credential.").
 //
 // GET /api/v1/apps/{app_uuid}/audit-log
 func (c *Client) ReadAuditLog(ctx context.Context, appUUID string, opts AuditLogQuery) ([]AuditRow, error) {

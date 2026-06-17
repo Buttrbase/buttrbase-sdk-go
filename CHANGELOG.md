@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — static API-key removal
+
+Static API-key auth is retired. OAuth2 client-credentials (`client_id` +
+`client_secret`, exchanged out-of-band for a bearer access token) is now the
+only supported app-server credential.
+
+### Breaking / Removed
+- Removed the `wb_live_`/`wb_test_` static-key auth path. `New` now takes an
+  OAuth2 bearer access token; the `Client.APIKey` field is renamed to
+  `Client.AccessToken`.
+- Removed `ExchangeAPIKey` and `ExchangeRefreshToken` (the
+  `POST /api/v1/auth/api-key/exchange` endpoint).
+- Removed app-level API-key admin: `ListAppAPIKeys`, `CreateAppAPIKey`,
+  `RevokeAppAPIKey`, `RotateAppAPIKey`.
+- Removed the org-scoped v2 API-key surface: `ListAPIKeysV2`, `CreateAPIKeyV2`,
+  `DeleteAPIKeyV2`.
+- Removed types: `ExchangeResponse`, `APIKeySummary`, `CreatedKeyResponse`,
+  `CreateAPIKeyInput`, `ExpiryInput`, `APIKeyType` (+consts), `APIKeyEnv`
+  (+consts), `ApiKey`.
+
+App-server callers manage client-credentials pairs with `CreateCredential`,
+`RotateCredentialSecret`, `DeleteCredential`, `ListCredentials`, exchange them
+for a bearer access token, then pass that token to `New`.
+
 ## Unreleased — app_uuid migration
 
 ### Breaking
@@ -10,16 +34,10 @@
 - `Login` no longer requires `org_name` — it is sent only when non-empty. `app_uuid` is now the required disambiguator.
 
 ### Added
-- `ExchangeAPIKey(ctx, apiKey)` — anonymous initial exchange against `POST /api/v1/auth/api-key/exchange`.
-- `ExchangeRefreshToken(ctx, refreshToken)` — refresh-mode exchange; revokes the presented refresh token.
 - `OAuthStartURL(provider, appUUID, returnTo)` — builds the `GET /api/v1/auth/oauth/{provider}/start` URL.
-- App-level API key admin: `ListAppAPIKeys`, `CreateAppAPIKey`, `RevokeAppAPIKey`, `RotateAppAPIKey` against `/api/v1/apps/{app_uuid}/api-keys[/...]`.
 - OAuth config admin: `ListOAuthConfigs`, `CreateOAuthConfig`, `UpdateOAuthConfig`, `DeleteOAuthConfig` against `/api/v1/apps/{app_uuid}/oauth-configs[/...]`.
 - `ReadAuditLog(ctx, appUUID, opts)` against `GET /api/v1/apps/{app_uuid}/audit-log`.
-- Types: `ExchangeResponse`, `APIKeySummary`, `CreatedKeyResponse`, `CreateAPIKeyInput`, `ExpiryInput`, `OAuthConfigSummary`, `CreateOAuthConfigInput`, `UpdateOAuthConfigInput`, `AuditLogQuery`, `AuditRow`, `OAuthProvider`, `APIKeyType`, `APIKeyEnv`.
-
-### Unchanged
-- Org-scoped `/api/v2/api-keys` surface (`ListAPIKeysV2`, `CreateAPIKeyV2`, `DeleteAPIKeyV2`) is untouched — the new app-level endpoints are a parallel surface.
+- Types: `OAuthConfigSummary`, `CreateOAuthConfigInput`, `UpdateOAuthConfigInput`, `AuditLogQuery`, `AuditRow`, `OAuthProvider`.
 
 ### Passkey support
 - `PasskeyRegisterBegin(ctx)`, `PasskeyRegisterComplete(ctx, body)`,

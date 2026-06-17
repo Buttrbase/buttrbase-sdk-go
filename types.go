@@ -557,17 +557,6 @@ type SendInvoiceResponse struct {
 	PaymentURL  string `json:"payment_url"`
 }
 
-// ----- API Keys v2 -----
-
-// ApiKey represents an API key (v2).
-type ApiKey struct {
-	KeyUUID   string `json:"key_uuid"`
-	Name      string `json:"name"`
-	Prefix    string `json:"prefix,omitempty"`
-	Key       string `json:"key,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-}
-
 // ----- Entitlements -----
 
 // EntitlementCheckResponse is the response from EntitlementsCheck.
@@ -703,82 +692,6 @@ const (
 	OAuthProviderApple     OAuthProvider = "apple"
 )
 
-// APIKeyType is the lifecycle category of an app-level API key.
-type APIKeyType string
-
-const (
-	// APIKeyTypeShortLived is the long-lived key that callers exchange for a JWT pair.
-	APIKeyTypeShortLived APIKeyType = "short_lived"
-	// APIKeyTypePermanent is a non-expiring key used directly as a bearer credential.
-	APIKeyTypePermanent APIKeyType = "permanent"
-	// APIKeyTypeExpiring is a key with a fixed expiration; rotation preserves the original expiry.
-	APIKeyTypeExpiring APIKeyType = "expiring"
-)
-
-// APIKeyEnv selects the environment a key is bound to.
-type APIKeyEnv string
-
-const (
-	APIKeyEnvLive APIKeyEnv = "live"
-	APIKeyEnvTest APIKeyEnv = "test"
-)
-
-// ExchangeResponse is the response from POST /api/v1/auth/api-key/exchange.
-//
-// Returned by both the initial exchange (raw API key in) and the refresh
-// exchange (opaque refresh token in). The presented refresh token, if any,
-// is revoked as a side effect.
-type ExchangeResponse struct {
-	AccessToken      string    `json:"access_token"`
-	RefreshToken     string    `json:"refresh_token"`
-	TokenType        string    `json:"token_type"`
-	AccessExpiresAt  time.Time `json:"access_expires_at"`
-	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
-}
-
-// APIKeySummary is the metadata view of an app-level API key; the raw key
-// material is never returned by list/get endpoints.
-type APIKeySummary struct {
-	KeyUUID    string     `json:"key_uuid"`
-	AppUUID    string     `json:"app_uuid"`
-	KeyPrefix  string     `json:"key_prefix"`
-	Name       string     `json:"name"`
-	KeyType    APIKeyType `json:"key_type"`
-	ExpiresAt  *time.Time `json:"expires_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	RevokedAt  *time.Time `json:"revoked_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-}
-
-// CreatedKeyResponse is returned by CreateAppAPIKey and RotateAppAPIKey.
-// RawKey is shown exactly once — the caller must persist it immediately,
-// because the backend stores only sha256(raw_key).
-type CreatedKeyResponse struct {
-	KeyUUID   string     `json:"key_uuid"`
-	RawKey    string     `json:"raw_key"`
-	KeyPrefix string     `json:"key_prefix"`
-	KeyType   APIKeyType `json:"key_type"`
-	ExpiresAt *time.Time `json:"expires_at"`
-}
-
-// CreateAPIKeyInput is the request body for CreateAppAPIKey.
-//
-// When KeyType is APIKeyTypeExpiring, Expiry is required; otherwise it
-// must be nil.
-type CreateAPIKeyInput struct {
-	Name    string       `json:"name"`
-	Env     APIKeyEnv    `json:"env"`
-	KeyType APIKeyType   `json:"key_type"`
-	Expiry  *ExpiryInput `json:"expiry,omitempty"`
-}
-
-// ExpiryInput is a tagged union — exactly one of Absolute or InDays must
-// be non-nil for an expiring key.
-type ExpiryInput struct {
-	Absolute *time.Time `json:"absolute,omitempty"`
-	InDays   *int       `json:"in_days,omitempty"`
-}
-
 // OAuthConfigSummary is the per-app per-provider OAuth configuration.
 // Secrets are never returned — only the metadata required to mint
 // authorize URLs and validate callbacks.
@@ -847,7 +760,7 @@ type UpdateAppRpConfigInput struct {
 
 // AuditLogQuery holds optional filters for ReadAuditLog. The backend
 // caps Limit at 1000 (defaults to 200 when zero). ActionPrefix matches
-// `action LIKE 'prefix%'` — e.g. "api_key." or "oauth_config.".
+// `action LIKE 'prefix%'` — e.g. "oauth_config." or "credential.".
 type AuditLogQuery struct {
 	Limit        int    `json:"-"`
 	ActionPrefix string `json:"-"`
