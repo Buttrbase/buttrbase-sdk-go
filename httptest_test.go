@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---- helpers ----
@@ -148,6 +150,145 @@ func TestDo_InvalidJSONResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "decode response") {
 		t.Errorf("expected 'decode response' in error, got %q", err.Error())
+	}
+}
+
+// ---- Client-credentials token grant ----
+
+// TestClientCredentials_AutoFetchAndReuse verifies that a client configured
+// with client_id/client_secret (and no access token) automatically exchanges
+// them for a bearer token before the first authenticated request, then reuses
+// that token on subsequent requests without re-hitting the token endpoint.
+func TestClientCredentials_AutoFetchAndReuse(t *testing.T) {
+	var tokenHits, couponHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/token":
+			tokenHits++
+			assertMethod(t, r, http.MethodPost)
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("token endpoint should not receive Authorization header, got %q", got)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode token request: %v", err)
+			}
+			if body["grant_type"] != "client_credentials" {
+				t.Errorf("grant_type = %v, want client_credentials", body["grant_type"])
+			}
+			if body["client_id"] != "cid" || body["client_secret"] != "csecret" {
+				t.Errorf("creds = %v/%v, want cid/csecret", body["client_id"], body["client_secret"])
+			}
+			writeJSON(w, 200, map[string]any{
+				"access_token": "jwt-abc",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			})
+		case "/v1/coupons/validate":
+			couponHits++
+			if got := r.Header.Get("Authorization"); got != "Bearer jwt-abc" {
+				t.Errorf("expected 'Bearer jwt-abc', got %q", got)
+			}
+			writeJSON(w, 200, map[string]any{"valid": true})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("", WithBaseURL(srv.URL), WithClientCredentials("cid", "csecret"))
+	if c.AccessToken != "" {
+		t.Fatalf("expected empty initial token, got %q", c.AccessToken)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.ValidateCoupon(context.Background(), "X", nil); err != nil {
+			t.Fatalf("ValidateCoupon #%d: %v", i, err)
+		}
+	}
+
+	if tokenHits != 1 {
+		t.Errorf("token endpoint hit %d times, want 1 (token should be cached)", tokenHits)
+	}
+	if couponHits != 3 {
+		t.Errorf("coupon endpoint hit %d times, want 3", couponHits)
+	}
+	if c.AccessToken != "jwt-abc" {
+		t.Errorf("cached token = %q, want jwt-abc", c.AccessToken)
+	}
+}
+
+// TestClientCredentials_RefreshOnExpiry verifies that once the cached token is
+// (near) expired the client fetches a new one on the next authenticated call.
+func TestClientCredentials_RefreshOnExpiry(t *testing.T) {
+	var tokenHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/token":
+			tokenHits++
+			writeJSON(w, 200, map[string]any{
+				"access_token": "tok-" + strconv.Itoa(tokenHits),
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			})
+		case "/v1/coupons/validate":
+			writeJSON(w, 200, map[string]any{"valid": true})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("", WithBaseURL(srv.URL), WithClientCredentials("cid", "csecret"))
+	if _, err := c.ValidateCoupon(context.Background(), "X", nil); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if tokenHits != 1 || c.AccessToken != "tok-1" {
+		t.Fatalf("after first call: hits=%d token=%q", tokenHits, c.AccessToken)
+	}
+
+	// Force the cached token to look expired.
+	c.tokenExpiry = time.Now().Add(-time.Minute)
+	if _, err := c.ValidateCoupon(context.Background(), "X", nil); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if tokenHits != 2 || c.AccessToken != "tok-2" {
+		t.Errorf("expected refresh: hits=%d token=%q, want hits=2 token=tok-2", tokenHits, c.AccessToken)
+	}
+}
+
+// TestAuthenticate_BadCredentials verifies that bad creds surface the 401 from
+// the token endpoint.
+func TestAuthenticate_BadCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/v1/auth/token")
+		writeJSON(w, 401, map[string]any{"error": "invalid client credentials"})
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("", WithBaseURL(srv.URL), WithClientCredentials("bad", "creds"))
+	err := c.Authenticate(context.Background())
+	if err == nil {
+		t.Fatal("expected error for bad credentials")
+	}
+	be, ok := err.(*ButtrbaseError)
+	if !ok {
+		t.Fatalf("expected *ButtrbaseError, got %T", err)
+	}
+	if be.StatusCode != 401 {
+		t.Errorf("expected 401, got %d", be.StatusCode)
+	}
+	if c.AccessToken != "" {
+		t.Errorf("expected no token cached on failure, got %q", c.AccessToken)
+	}
+}
+
+// TestAuthenticate_NoCredentials verifies Authenticate fails fast without creds.
+func TestAuthenticate_NoCredentials(t *testing.T) {
+	c := New("")
+	if err := c.Authenticate(context.Background()); err == nil {
+		t.Fatal("expected error when no client credentials configured")
 	}
 }
 

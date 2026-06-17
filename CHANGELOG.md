@@ -3,8 +3,18 @@
 ## Unreleased — static API-key removal
 
 Static API-key auth is retired. OAuth2 client-credentials (`client_id` +
-`client_secret`, exchanged out-of-band for a bearer access token) is now the
-only supported app-server credential.
+`client_secret`) is now the only supported app-server credential, and the SDK
+performs the token grant for you.
+
+### Added
+- `WithClientCredentials(clientID, clientSecret)` option — construct the client
+  with a client-credentials pair and the SDK fetches/refreshes the bearer
+  access token automatically (lazily before the first authenticated request,
+  refreshing a bit before `expires_in`).
+- `Authenticate(ctx)` — exchanges the configured `client_id`/`client_secret`
+  for an access token via `POST /api/v1/auth/token` and caches it. Called
+  automatically before authenticated requests; call it directly to fail fast on
+  bad credentials.
 
 ### Breaking / Removed
 - Removed the `wb_live_`/`wb_test_` static-key auth path. `New` now takes an
@@ -21,8 +31,9 @@ only supported app-server credential.
   (+consts), `ApiKey`.
 
 App-server callers manage client-credentials pairs with `CreateCredential`,
-`RotateCredentialSecret`, `DeleteCredential`, `ListCredentials`, exchange them
-for a bearer access token, then pass that token to `New`.
+`RotateCredentialSecret`, `DeleteCredential`, `ListCredentials`, then construct
+the client with `WithClientCredentials` — the SDK handles the token grant. A
+pre-obtained access token may still be passed directly to `New`.
 
 ## Unreleased — app_uuid migration
 

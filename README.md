@@ -28,10 +28,11 @@ import (
 )
 
 func main() {
-    // App-server auth uses an OAuth2 client-credentials access token.
-    // Exchange your client_id/client_secret for an access token out-of-band,
-    // then construct the client with that bearer token.
-    client := buttrbase.New("<oauth2-access-token>")
+    // App-server auth uses OAuth2 client-credentials. Construct the client
+    // with your client_id/client_secret and the SDK fetches (and refreshes)
+    // the bearer access token automatically — calls just work.
+    client := buttrbase.New("",
+        buttrbase.WithClientCredentials("<client-id>", "<client-secret>"))
     ctx := context.Background()
 
     appUUID := "018f1234-5678-7000-8000-000000000001"
@@ -77,30 +78,45 @@ resp, err := client.OtpVerify(ctx, appUUID, "+15551234567", "123456")
 
 ### App-server auth (OAuth2 client-credentials)
 
-App servers authenticate with an OAuth2 **client-credentials** access token —
-the single supported app-server credential. Static API keys (the retired
+App servers authenticate with an OAuth2 **client-credentials** grant — the
+single supported app-server credential. Static API keys (the retired
 `wb_live_`/`wb_test_` keys and the `api-key/exchange` endpoint) are no longer
 supported.
 
-Provision a `client_id`/`client_secret` pair with `CreateCredential`, exchange
-it for an access token via the OAuth2 token endpoint, then construct the client
-with the resulting bearer token:
+Construct the client with your `client_id`/`client_secret` via
+`WithClientCredentials`. The SDK exchanges them for a bearer access token via
+`POST /api/v1/auth/token` automatically — lazily before the first
+authenticated request, and again whenever the cached token expires (it tracks
+`expires_in` and refreshes a little early). You never handle the token
+yourself:
 
 ```go
-// Manage client-credentials (client_id / client_secret) pairs.
+appClient := buttrbase.New("",
+    buttrbase.WithClientCredentials("<client-id>", "<client-secret>"))
+
+// Authenticated calls just work — the token is fetched and cached on demand.
+profile, err := appClient.GetProfile(ctx)
+
+// Optional: fetch a token eagerly to fail fast on bad credentials.
+if err := appClient.Authenticate(ctx); err != nil { /* 401 invalid client credentials */ }
+```
+
+Provision and manage `client_id`/`client_secret` pairs with `CreateCredential`,
+`RotateCredentialSecret`, `DeleteCredential`, and `ListCredentials`:
+
+```go
 cred, err := client.CreateCredential(ctx, buttrbase.CreateCredentialRequest{
     Name: "production-server",
 })
 fmt.Println(cred.ClientID, cred.ClientSecret) // secret shown once — persist it
 
-// Rotate or revoke as needed.
 rotated, err := client.RotateCredentialSecret(ctx, cred.CredentialsID)
 err = client.DeleteCredential(ctx, cred.CredentialsID)
-
-// Exchange client_id/client_secret for an access token (OAuth2
-// client-credentials grant), then:
-appClient := buttrbase.New("<oauth2-access-token>")
 ```
+
+You may still pass a pre-obtained access token directly with
+`buttrbase.New("<oauth2-access-token>")` if you manage the token grant
+yourself.
 
 ### OAuth Start URL
 
@@ -377,7 +393,8 @@ Non-2xx responses return `*ButtrbaseError` with `StatusCode`, `Detail`, and `Bod
 ### Complete Onboarding
 
 ```go
-client := buttrbase.New("<oauth2-access-token>")
+client := buttrbase.New("",
+    buttrbase.WithClientCredentials("<client-id>", "<client-secret>"))
 ctx := context.Background()
 
 appUUID := "018f1234-5678-7000-8000-000000000001"

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,17 +30,30 @@ const (
 	maxRetryDelay = 4 * time.Second
 )
 
+// tokenRefreshSkew is how long before a token's stated expiry we treat it as
+// expired and refresh it, to avoid races where a token expires in flight.
+const tokenRefreshSkew = 30 * time.Second
+
 // Client is the Buttrbase API client.
 type Client struct {
 	BaseURL string
 
 	// AccessToken is the OAuth2 bearer token sent as `Authorization: Bearer`
 	// on authenticated requests. For app-server callers this is the access
-	// token obtained from the OAuth2 client-credentials grant (exchange your
-	// client_id/client_secret for a token, then construct the client with it).
-	// For end-user flows it is the access token returned by Login/VerifyOTP/etc.,
-	// which those methods refresh in place. Static API keys are no longer supported.
+	// token obtained from the OAuth2 client-credentials grant — either set
+	// directly, or fetched automatically from ClientID/ClientSecret on the
+	// first authenticated request (see Authenticate). For end-user flows it is
+	// the access token returned by Login/VerifyOTP/etc., which those methods
+	// refresh in place. Static API keys are no longer supported.
 	AccessToken string
+
+	// ClientID and ClientSecret are the OAuth2 client-credentials. When set,
+	// the client exchanges them for an access token via the token endpoint
+	// (POST /api/v1/auth/token) — lazily before the first authenticated
+	// request, and again whenever the cached token expires. See
+	// WithClientCredentials and Authenticate.
+	ClientID     string
+	ClientSecret string
 
 	HTTPClient *http.Client
 
@@ -50,6 +64,13 @@ type Client struct {
 	// RetryBaseDelay is the base delay for exponential backoff with jitter.
 	// Defaults to defaultRetryBaseDelay.
 	RetryBaseDelay time.Duration
+
+	// tokenMu guards AccessToken and tokenExpiry for concurrent
+	// client-credentials refreshes.
+	tokenMu sync.Mutex
+	// tokenExpiry is when the cached client-credentials access token expires
+	// (zero if unknown, e.g. a directly-supplied token or an end-user token).
+	tokenExpiry time.Time
 }
 
 // Option configures a Client.
@@ -70,14 +91,27 @@ func WithRetryBaseDelay(d time.Duration) Option {
 	return func(c *Client) { c.RetryBaseDelay = d }
 }
 
-// New creates a new Client authenticated with the given OAuth2 bearer
-// access token.
+// WithClientCredentials configures the client to authenticate with an OAuth2
+// client-credentials pair. The client exchanges these for a bearer access
+// token via the token endpoint automatically (lazily before the first
+// authenticated request, refreshing when the token expires). Construct the
+// client with an empty accessToken and just make calls.
+func WithClientCredentials(clientID, clientSecret string) Option {
+	return func(c *Client) {
+		c.ClientID = clientID
+		c.ClientSecret = clientSecret
+	}
+}
+
+// New creates a new Client.
 //
-// App-server callers obtain accessToken from the OAuth2 client-credentials
-// grant (exchange your client_id/client_secret for an access token, then
-// pass it here). End-user callers may pass an empty string and authenticate
-// via Login/VerifyOTP/etc., which populate and refresh the token in place.
-// Static API keys (the retired wb_live_/wb_test_ keys) are no longer accepted.
+// App-server callers typically pass an empty accessToken and supply an OAuth2
+// client_id/client_secret via WithClientCredentials; the client then fetches
+// and refreshes a bearer access token on demand (see Authenticate). You may
+// also pass a pre-obtained access token directly. End-user callers may pass an
+// empty string and authenticate via Login/VerifyOTP/etc., which populate and
+// refresh the token in place. Static API keys (the retired wb_live_/wb_test_
+// keys) are no longer accepted.
 func New(accessToken string, opts ...Option) *Client {
 	c := &Client{
 		BaseURL:        defaultBaseURL,
@@ -168,6 +202,14 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, auth bool, out any) error {
+	// For authenticated requests, ensure a valid bearer token is available.
+	// When client-credentials are configured, this fetches/refreshes the
+	// access token lazily before the request is sent.
+	if auth {
+		if err := c.ensureToken(ctx); err != nil {
+			return err
+		}
+	}
 	// Buffer the body once so it can be re-read on every retry attempt; a
 	// fresh reader is set per attempt below (otherwise retries would send an
 	// empty body).
@@ -194,8 +236,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, auth boo
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
-		if auth && c.AccessToken != "" {
-			req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+		if auth {
+			if tok := c.currentToken(); tok != "" {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			}
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -242,6 +286,84 @@ func (c *Client) do(ctx context.Context, method, path string, body any, auth boo
 		}
 		return nil
 	}
+}
+
+// ----- Client-credentials token grant -----
+
+// tokenResponse is the body returned by POST /api/v1/auth/token.
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int64  `json:"expires_in"`
+}
+
+// currentToken returns the bearer token to send, reading it under the token
+// lock so it is safe against concurrent client-credentials refreshes.
+func (c *Client) currentToken() string {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	return c.AccessToken
+}
+
+// ensureToken makes sure a usable bearer token is available before an
+// authenticated request. If client-credentials are configured and the cached
+// token is missing or (near) expired, it fetches a fresh one. With no
+// client-credentials it is a no-op (the caller supplied a token directly or
+// authenticates via an end-user flow).
+func (c *Client) ensureToken(ctx context.Context) error {
+	if c.ClientID == "" || c.ClientSecret == "" {
+		return nil
+	}
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	// A token with a known expiry is reused until it nears expiry. A token
+	// with no tracked expiry (e.g. set directly) but present is left alone.
+	if c.AccessToken != "" {
+		if c.tokenExpiry.IsZero() || time.Now().Before(c.tokenExpiry.Add(-tokenRefreshSkew)) {
+			return nil
+		}
+	}
+	return c.fetchTokenLocked(ctx)
+}
+
+// Authenticate exchanges the configured client_id/client_secret for an OAuth2
+// access token via POST /api/v1/auth/token and caches it as the bearer used by
+// subsequent requests. It is called automatically before authenticated
+// requests when client-credentials are configured, so most callers never need
+// to invoke it directly; call it explicitly to fail fast on bad credentials.
+func (c *Client) Authenticate(ctx context.Context) error {
+	if c.ClientID == "" || c.ClientSecret == "" {
+		return fmt.Errorf("buttrbase: Authenticate requires client_id and client_secret")
+	}
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	return c.fetchTokenLocked(ctx)
+}
+
+// fetchTokenLocked performs the token exchange and stores the result. The
+// caller must hold tokenMu.
+func (c *Client) fetchTokenLocked(ctx context.Context) error {
+	body := map[string]any{
+		"grant_type":    "client_credentials",
+		"client_id":     c.ClientID,
+		"client_secret": c.ClientSecret,
+	}
+	var out tokenResponse
+	// auth=false: the token endpoint authenticates via the body, not a bearer
+	// header (and we must not recurse into ensureToken).
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/token", body, false, &out); err != nil {
+		return err
+	}
+	if out.AccessToken == "" {
+		return fmt.Errorf("buttrbase: token endpoint returned no access_token")
+	}
+	c.AccessToken = out.AccessToken
+	if out.ExpiresIn > 0 {
+		c.tokenExpiry = time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)
+	} else {
+		c.tokenExpiry = time.Time{}
+	}
+	return nil
 }
 
 // ----- Coupons -----
