@@ -79,9 +79,7 @@ resp, err := client.OtpVerify(ctx, appUUID, "+15551234567", "123456")
 ### App-server auth (OAuth2 client-credentials)
 
 App servers authenticate with an OAuth2 **client-credentials** grant — the
-single supported app-server credential. Static API keys (the retired
-`wb_live_`/`wb_test_` keys and the `api-key/exchange` endpoint) are no longer
-supported.
+single supported app-server credential.
 
 Construct the client with your `client_id`/`client_secret` via
 `WithClientCredentials`. The SDK exchanges them for a bearer access token via

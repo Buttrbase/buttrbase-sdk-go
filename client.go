@@ -110,8 +110,7 @@ func WithClientCredentials(clientID, clientSecret string) Option {
 // and refreshes a bearer access token on demand (see Authenticate). You may
 // also pass a pre-obtained access token directly. End-user callers may pass an
 // empty string and authenticate via Login/VerifyOTP/etc., which populate and
-// refresh the token in place. Static API keys (the retired wb_live_/wb_test_
-// keys) are no longer accepted.
+// refresh the token in place.
 func New(accessToken string, opts ...Option) *Client {
 	c := &Client{
 		BaseURL:        defaultBaseURL,
