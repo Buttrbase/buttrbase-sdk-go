@@ -45,6 +45,26 @@ func main() {
 }
 ```
 
+## Backend Authentication
+
+For backend services authenticating with OAuth2 client-credentials (replaces static `wb_*` API keys):
+
+```go
+// Auto-managed token refresh (recommended for servers)
+client := buttrbase.NewWithCredentials(
+    os.Getenv("BUTTRBASE_CLIENT_ID"),
+    os.Getenv("BUTTRBASE_CLIENT_SECRET"),
+)
+
+// Manual token management
+resp, err := buttrbase.GetAppToken(ctx, buttrbase.DefaultBaseURL,
+    clientID, clientSecret)
+client := buttrbase.New(resp.AccessToken)
+```
+
+`NewWithCredentials` fetches a token lazily on the first authenticated request and
+refreshes it automatically when within 60 seconds of expiry. Thread-safe.
+
 ## Authentication
 
 ### Register

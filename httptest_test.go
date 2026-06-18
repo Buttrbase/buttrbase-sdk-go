@@ -1572,3 +1572,156 @@ func TestVerifyWebhookSignature_ZeroTolerance(t *testing.T) {
 		t.Log("expected false due to wrong signature, not tolerance")
 	}
 }
+
+// ---- GetAppToken (package-level) ----
+
+func TestGetAppToken_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/auth/token" {
+			t.Errorf("expected path /api/v1/auth/token, got %s", r.URL.Path)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["grant_type"] != "client_credentials" {
+			t.Errorf("expected grant_type=client_credentials, got %v", body["grant_type"])
+		}
+		if body["client_id"] != "my-client-id" {
+			t.Errorf("expected client_id=my-client-id, got %v", body["client_id"])
+		}
+		if body["client_secret"] != "my-client-secret" {
+			t.Errorf("expected client_secret=my-client-secret, got %v", body["client_secret"])
+		}
+		writeJSON(w, 200, AppTokenResponse{
+			AccessToken: "eyJ.test.token",
+			TokenType:   "Bearer",
+			ExpiresIn:   3600,
+		})
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	tok, err := GetAppToken(ctx, srv.URL, "my-client-id", "my-client-secret")
+	if err != nil {
+		t.Fatalf("GetAppToken error: %v", err)
+	}
+	if tok.AccessToken != "eyJ.test.token" {
+		t.Errorf("expected access_token 'eyJ.test.token', got %q", tok.AccessToken)
+	}
+	if tok.TokenType != "Bearer" {
+		t.Errorf("expected token_type 'Bearer', got %q", tok.TokenType)
+	}
+	if tok.ExpiresIn != 3600 {
+		t.Errorf("expected expires_in 3600, got %d", tok.ExpiresIn)
+	}
+}
+
+func TestGetAppToken_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 401, map[string]any{"detail": "invalid client credentials"})
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	_, err := GetAppToken(ctx, srv.URL, "bad-id", "bad-secret")
+	if err == nil {
+		t.Fatal("expected error for bad credentials")
+	}
+	be, ok := err.(*ButtrbaseError)
+	if !ok {
+		t.Fatalf("expected *ButtrbaseError, got %T", err)
+	}
+	if be.StatusCode != 401 {
+		t.Errorf("expected 401, got %d", be.StatusCode)
+	}
+}
+
+// ---- GetAppToken (method on Client) ----
+
+func TestClientGetAppToken_HappyPath(t *testing.T) {
+	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/token" {
+			t.Errorf("expected path /api/v1/auth/token, got %s", r.URL.Path)
+		}
+		writeJSON(w, 200, AppTokenResponse{
+			AccessToken: "method-token",
+			TokenType:   "Bearer",
+			ExpiresIn:   1800,
+		})
+	})
+	_ = srv
+
+	ctx := context.Background()
+	tok, err := c.GetAppToken(ctx, "cid", "csecret")
+	if err != nil {
+		t.Fatalf("c.GetAppToken error: %v", err)
+	}
+	if tok.AccessToken != "method-token" {
+		t.Errorf("expected 'method-token', got %q", tok.AccessToken)
+	}
+}
+
+// ---- NewWithCredentials auto-refresh ----
+
+func TestNewWithCredentials_AutoFetchToken(t *testing.T) {
+	tokenCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/token" {
+			tokenCalls++
+			writeJSON(w, 200, AppTokenResponse{
+				AccessToken: "auto-token",
+				TokenType:   "Bearer",
+				ExpiresIn:   3600,
+			})
+			return
+		}
+		// Any other authenticated endpoint: verify Authorization header.
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer auto-token" {
+			t.Errorf("expected 'Bearer auto-token', got %q", auth)
+		}
+		writeJSON(w, 200, map[string]any{"valid": true, "code": "SAVE10", "discount_cents": 0, "discount_type": "fixed"})
+	}))
+	defer srv.Close()
+
+	c := NewWithCredentials("cid", "csecret", WithBaseURL(srv.URL))
+	ctx := context.Background()
+
+	// First call should trigger a token fetch then the real request.
+	_, err := c.ValidateCoupon(ctx, "SAVE10", nil)
+	if err != nil {
+		t.Fatalf("ValidateCoupon error: %v", err)
+	}
+	if tokenCalls != 1 {
+		t.Errorf("expected 1 token call, got %d", tokenCalls)
+	}
+
+	// Second call should reuse the cached token.
+	_, err = c.ValidateCoupon(ctx, "SAVE10", nil)
+	if err != nil {
+		t.Fatalf("second ValidateCoupon error: %v", err)
+	}
+	if tokenCalls != 1 {
+		t.Errorf("expected still 1 token call (cached), got %d", tokenCalls)
+	}
+}
+
+func TestNewWithCredentials_TokenFetchError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 401, map[string]any{"detail": "invalid credentials"})
+	}))
+	defer srv.Close()
+
+	c := NewWithCredentials("bad-id", "bad-secret", WithBaseURL(srv.URL))
+	ctx := context.Background()
+
+	_, err := c.ValidateCoupon(ctx, "SAVE10", nil)
+	if err == nil {
+		t.Fatal("expected error when token fetch fails")
+	}
+	if strings.Contains(err.Error(), "refresh credentials token") == false {
+		t.Errorf("expected 'refresh credentials token' in error, got %q", err.Error())
+	}
+}

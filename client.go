@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,11 +18,21 @@ import (
 
 const defaultBaseURL = "https://api.buttrbase.com"
 
+// DefaultBaseURL is the default Buttrbase API base URL.
+const DefaultBaseURL = defaultBaseURL
+
 // Client is the Buttrbase API client.
 type Client struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
+
+	// OAuth2 client-credentials fields (set by NewWithCredentials).
+	clientID     string
+	clientSecret string
+	tokenMu      sync.Mutex
+	cachedToken  string
+	tokenExpiry  time.Time
 }
 
 // Option configures a Client.
@@ -46,7 +57,117 @@ func New(apiKey string, opts ...Option) *Client {
 	return c
 }
 
+// AppTokenResponse is the response from the client-credentials token endpoint.
+type AppTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int64  `json:"expires_in"`
+}
+
+// NewWithCredentials creates a Client that automatically fetches and refreshes
+// an access token using OAuth2 client-credentials.
+// The token is fetched lazily on the first authenticated request and refreshed
+// when within 60 seconds of expiry.
+func NewWithCredentials(clientID, clientSecret string, opts ...Option) *Client {
+	c := &Client{
+		BaseURL:      defaultBaseURL,
+		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
+		clientID:     clientID,
+		clientSecret: clientSecret,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// ensureToken checks whether a valid cached token exists and fetches a new one
+// if necessary. It is called by do when auth==true and credentials are set.
+func (c *Client) ensureToken(ctx context.Context) error {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
+	if c.cachedToken != "" && !time.Now().After(c.tokenExpiry.Add(-60*time.Second)) {
+		return nil
+	}
+
+	tok, err := c.getAppToken(ctx, c.clientID, c.clientSecret)
+	if err != nil {
+		return fmt.Errorf("buttrbase: refresh credentials token: %w", err)
+	}
+	c.cachedToken = tok.AccessToken
+	c.tokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	return nil
+}
+
+// getAppToken is the internal helper that calls the token endpoint.
+func (c *Client) getAppToken(ctx context.Context, clientID, clientSecret string) (*AppTokenResponse, error) {
+	body := map[string]any{
+		"grant_type":    "client_credentials",
+		"client_id":     clientID,
+		"client_secret": clientSecret,
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	u := c.BaseURL + "/api/v1/auth/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := ""
+		var parsed map[string]any
+		if json.Unmarshal(respBody, &parsed) == nil {
+			if d, ok := parsed["detail"].(string); ok {
+				detail = d
+			}
+		}
+		return nil, &ButtrbaseError{StatusCode: resp.StatusCode, Detail: detail, Body: respBody}
+	}
+	var out AppTokenResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("buttrbase: decode token response: %w", err)
+	}
+	return &out, nil
+}
+
+// GetAppToken exchanges client credentials for a bearer token using this
+// client's base URL. Use this if you want to manage token lifecycle yourself.
+func (c *Client) GetAppToken(ctx context.Context, clientID, clientSecret string) (*AppTokenResponse, error) {
+	return c.getAppToken(ctx, clientID, clientSecret)
+}
+
+// GetAppToken exchanges client credentials for a bearer token at the given baseURL.
+// Use this package-level function if you want to manage token lifecycle yourself.
+func GetAppToken(ctx context.Context, baseURL, clientID, clientSecret string) (*AppTokenResponse, error) {
+	c := &Client{
+		BaseURL:    baseURL,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+	}
+	return c.getAppToken(ctx, clientID, clientSecret)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, auth bool, out any) error {
+	// If credentials are configured (not APIKey mode), fetch/refresh token lazily.
+	if auth && c.clientID != "" {
+		if err := c.ensureToken(ctx); err != nil {
+			return err
+		}
+	}
+
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -64,8 +185,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any, auth boo
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	if auth && c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if auth {
+		if c.clientID != "" {
+			// Use the auto-managed credentials token.
+			c.tokenMu.Lock()
+			tok := c.cachedToken
+			c.tokenMu.Unlock()
+			if tok != "" {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			}
+		} else if c.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
