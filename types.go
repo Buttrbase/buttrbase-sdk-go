@@ -41,25 +41,63 @@ type GiftCardRedemption struct {
 	Raw            map[string]any `json:"-"`
 }
 
-// SendMagicLinkOptions holds optional parameters for SendMagicLink.
+// SendMagicLinkOptions holds the optional parameters for SendMagicLink.
+//
+// AppUUID identifies the Buttrbase application the sign-in is for. Combined
+// with RedirectTo it drives cross-app federation (see SendMagicLink): when
+// RedirectTo's ORIGIN is registered on the application (its WebAuthn
+// rp_origins or configured redirect URL) the emailed link points at the app's
+// own callback ("{redirect_to}?token=..."), so the app verifies the RS256
+// token itself. Non-allowlisted or non-absolute targets fall back to the
+// Buttrbase-hosted sign-in page. Omit RedirectTo for the first-party flow.
+//
+// OrgUUID optionally scopes the magic link to a specific organization.
 type SendMagicLinkOptions struct {
-	RedirectURL string `json:"redirect_url,omitempty"`
-	TTLSeconds  *int64 `json:"ttl_seconds,omitempty"`
+	// AppUUID is the target application's UUID (optional).
+	AppUUID string `json:"app_uuid,omitempty"`
+	// RedirectTo is an absolute callback URL. Its origin must be allowlisted
+	// on the application for the federated (app-verifies-token) flow.
+	RedirectTo string `json:"redirect_to,omitempty"`
+	// OrgUUID optionally scopes the link to an organization.
+	OrgUUID string `json:"org_uuid,omitempty"`
 }
 
-// MagicLinkSend is the response from SendMagicLink.
+// MagicLinkSend is the response from SendMagicLink
+// (POST /api/auth/magic-link/send).
 type MagicLinkSend struct {
-	Sent  bool           `json:"sent"`
-	Email string         `json:"email,omitempty"`
-	Raw   map[string]any `json:"-"`
+	// Sent reports whether the magic-link email was dispatched.
+	Sent bool `json:"sent"`
+	// DevToken is the raw one-time token, echoed only by non-production
+	// (dev) environments to ease testing; it is null/empty in production.
+	DevToken string `json:"dev_token,omitempty"`
+	// ExpiresInSeconds is the lifetime of the issued token in seconds.
+	ExpiresInSeconds int64 `json:"expires_in_seconds"`
+	// Raw holds the decoded response body for forward compatibility.
+	Raw map[string]any `json:"-"`
 }
 
-// MagicLinkVerify is the response from VerifyMagicLink.
+// MagicLinkUser is the authenticated user returned by VerifyMagicLink.
+type MagicLinkUser struct {
+	UserUUID string `json:"user_uuid"`
+	Email    string `json:"email"`
+}
+
+// MagicLinkVerify is the response from VerifyMagicLink
+// (POST /api/auth/magic-link/verify).
 type MagicLinkVerify struct {
-	Valid  bool           `json:"valid"`
-	Email  string         `json:"email,omitempty"`
-	UserID *int           `json:"user_id,omitempty"`
-	Raw    map[string]any `json:"-"`
+	// AccessToken is a JWKS-verifiable RS256 access token. Unlike the
+	// HS256 tokens issued by the generic email-OTP endpoints (signed with
+	// Buttrbase's server secret, unverifiable via the public JWKS), this
+	// token can be verified by third-party apps against the JWKS.
+	AccessToken string `json:"access_token"`
+	// TokenType is the token type, typically "Bearer".
+	TokenType string `json:"token_type"`
+	// User is the signed-in user.
+	User MagicLinkUser `json:"user"`
+	// RedirectTo echoes the resolved post-sign-in redirect, if any.
+	RedirectTo string `json:"redirect_to,omitempty"`
+	// Raw holds the decoded response body for forward compatibility.
+	Raw map[string]any `json:"-"`
 }
 
 // MfaStatus is the response from MfaStatus.

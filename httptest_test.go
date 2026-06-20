@@ -428,32 +428,41 @@ func TestSendMagicLink_HappyPath(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		assertPath(t, r, "/api/auth/magic-link/send")
-		writeJSON(w, 200, MagicLinkSend{Sent: true, Email: "user@example.com"})
+		writeJSON(w, 200, MagicLinkSend{Sent: true, ExpiresInSeconds: 900})
 	})
-	res, err := c.SendMagicLink(context.Background(), "app-uuid-1", "user@example.com", nil)
+	res, err := c.SendMagicLink(context.Background(), "user@example.com", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Sent {
 		t.Error("expected sent=true")
 	}
+	if res.ExpiresInSeconds != 900 {
+		t.Errorf("expected expires_in_seconds=900, got %d", res.ExpiresInSeconds)
+	}
 }
 
 func TestSendMagicLink_WithOptions(t *testing.T) {
-	ttl := int64(600)
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["app_uuid"] == nil {
+			t.Error("expected app_uuid in body")
+		}
 		if body["redirect_to"] == nil {
 			t.Error("expected redirect_to in body")
 		}
-		if body["ttl_seconds"] == nil {
-			t.Error("expected ttl_seconds in body")
+		if body["org_uuid"] == nil {
+			t.Error("expected org_uuid in body")
 		}
 		writeJSON(w, 200, MagicLinkSend{Sent: true})
 	})
-	opts := &SendMagicLinkOptions{RedirectURL: "https://example.com/callback", TTLSeconds: &ttl}
-	_, err := c.SendMagicLink(context.Background(), "app-uuid-1", "user@example.com", opts)
+	opts := &SendMagicLinkOptions{
+		AppUUID:    "app-uuid-1",
+		RedirectTo: "https://example.com/callback",
+		OrgUUID:    "org-uuid-1",
+	}
+	_, err := c.SendMagicLink(context.Background(), "user@example.com", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +472,7 @@ func TestSendMagicLink_Error(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, map[string]any{"detail": "invalid email"})
 	})
-	_, err := c.SendMagicLink(context.Background(), "app-uuid-1", "bad-email", nil)
+	_, err := c.SendMagicLink(context.Background(), "bad-email", nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -472,18 +481,24 @@ func TestSendMagicLink_Error(t *testing.T) {
 // ---- VerifyMagicLink ----
 
 func TestVerifyMagicLink_HappyPath(t *testing.T) {
-	userID := 99
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		assertPath(t, r, "/api/auth/magic-link/verify")
-		writeJSON(w, 200, MagicLinkVerify{Valid: true, Email: "user@example.com", UserID: &userID})
+		writeJSON(w, 200, MagicLinkVerify{
+			AccessToken: "rs256.jwt.token",
+			TokenType:   "Bearer",
+			User:        MagicLinkUser{UserUUID: "user-uuid-99", Email: "user@example.com"},
+		})
 	})
 	res, err := c.VerifyMagicLink(context.Background(), "some-token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Valid {
-		t.Error("expected valid=true")
+	if res.AccessToken == "" {
+		t.Error("expected non-empty access_token")
+	}
+	if res.User.Email != "user@example.com" {
+		t.Errorf("unexpected user email: %q", res.User.Email)
 	}
 }
 

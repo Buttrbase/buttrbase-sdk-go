@@ -59,13 +59,56 @@ resp, err := client.Register(ctx, appUUID, "user@example.com", "password", "Acme
     &buttrbase.RegisterOptions{FirstName: "Jane", LastName: "Doe"})
 ```
 
-### Magic Link
+### Magic-link (passwordless sign-in)
+
+Magic-link is the **only** browser sign-in flow that yields a
+**JWKS-verifiable RS256 access token**. The generic email-OTP endpoints
+(`OtpSend` / `OtpVerify`) issue **HS256** tokens signed with Buttrbase's
+server secret, which the public JWKS **cannot** verify — so third-party
+apps that need to verify tokens themselves must use magic-link.
+
+**Flow:** `SendMagicLink` emails the user a one-time link → the user clicks it
+→ your callback receives a `token` query parameter → you call
+`VerifyMagicLink(token)` to exchange it for the RS256 `access_token` and the
+signed-in user.
+
+| Method | Endpoint | Request | Response |
+| --- | --- | --- | --- |
+| `SendMagicLink(ctx, email, *opts)` | `POST /api/auth/magic-link/send` | `email` (required), `app_uuid`?, `redirect_to`?, `org_uuid`? | `MagicLinkSend{ Sent, DevToken, ExpiresInSeconds }` |
+| `VerifyMagicLink(ctx, token)` | `POST /api/auth/magic-link/verify` | `token` | `MagicLinkVerify{ AccessToken, TokenType, User{UserUUID,Email}, RedirectTo }` |
+
+`DevToken` is the raw one-time token, echoed only by non-production (dev)
+environments to ease testing; it is empty in production. `VerifyMagicLink`
+is anonymous — it needs no Authorization header.
+
+#### Cross-app federation (redirect allowlist)
+
+When you pass `AppUUID` **together with** a `RedirectTo` whose **origin** is
+registered on that Buttrbase application (its WebAuthn `rp_origins` or
+configured redirect URL), the emailed link points at the app's **own**
+callback (`{redirect_to}?token=...`), so the app verifies the RS256 token
+itself. Non-allowlisted or non-absolute targets fall back to the
+Buttrbase-hosted sign-in page. **Omit `RedirectTo` for the first-party
+flow.**
 
 ```go
-_, err := client.SendMagicLink(ctx, appUUID, "user@example.com",
-    &buttrbase.SendMagicLinkOptions{RedirectURL: "https://app.example.com/auth/callback"})
+appUUID := "018f1234-5678-7000-8000-000000000001"
+
+// Send — cross-app: link returns to your own allowlisted callback origin.
+sent, err := client.SendMagicLink(ctx, "user@example.com",
+    &buttrbase.SendMagicLinkOptions{
+        AppUUID:    appUUID,
+        RedirectTo: "https://app.example.com/auth/callback",
+    })
+if err != nil { panic(err) }
+fmt.Printf("sent=%v expires_in=%ds\n", sent.Sent, sent.ExpiresInSeconds)
+// sent.DevToken is set only in non-prod dev environments.
+
+// Verify — in your callback handler, exchange the link's `token` query param.
 resp, err := client.VerifyMagicLink(ctx, "token-from-email")
-fmt.Println(resp.AccessToken) // JWT with sub, org, aud claims
+if err != nil { panic(err) }
+fmt.Println(resp.AccessToken)    // JWKS-verifiable RS256 access token
+fmt.Println(resp.User.UserUUID)  // signed-in user
 ```
 
 ### OTP (Passwordless)

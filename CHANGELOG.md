@@ -35,6 +35,17 @@ App-server callers manage client-credentials pairs with `CreateCredential`,
 the client with `WithClientCredentials` — the SDK handles the token grant. A
 pre-obtained access token may still be passed directly to `New`.
 
+## Unreleased — magic-link contract fix
+
+### Breaking
+- `SendMagicLink` signature changed to `SendMagicLink(ctx, email string, *SendMagicLinkOptions)`. `app_uuid` moved out of the positional args and into `SendMagicLinkOptions` (it is optional per the backend contract).
+- `SendMagicLinkOptions` now exposes `AppUUID`, `RedirectTo`, and `OrgUUID` (with `omitempty` JSON tags). The old `RedirectURL` and unsupported `TTLSeconds` fields were removed.
+- `MagicLinkSend` now matches the response contract: `Sent bool`, `DevToken string` (raw one-time token, non-prod dev-echo only; empty in prod), `ExpiresInSeconds int64`. The bogus `Email` field was removed.
+- `MagicLinkVerify` now matches the response contract: `AccessToken string` (JWKS-verifiable RS256), `TokenType string`, `User MagicLinkUser{UserUUID, Email}`, `RedirectTo string`. The bogus `Valid`/`Email`/`UserID` fields were removed. New `MagicLinkUser` type added.
+
+### Notes
+- Magic-link is the only browser flow that yields a JWKS-verifiable RS256 access token; the generic email-OTP endpoints issue HS256 tokens the public JWKS cannot verify. Cross-app federation: passing `AppUUID` + an allowlisted `RedirectTo` origin makes the emailed link target the app's own callback so the app verifies the RS256 token itself.
+
 ## Unreleased — app_uuid migration
 
 ### Breaking

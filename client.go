@@ -409,19 +409,39 @@ func (c *Client) RedeemGiftCard(ctx context.Context, code string, amountCents in
 
 // ----- Magic link -----
 
-// SendMagicLink sends a magic-link email for the given app.
+// SendMagicLink sends a passwordless magic-link email and is the only
+// browser sign-in flow that yields a JWKS-verifiable RS256 access token
+// (the generic email-OTP endpoints issue HS256 tokens signed with
+// Buttrbase's server secret, which the public JWKS cannot verify). Use it
+// for third-party / cross-app sign-in.
+//
 // POST /api/auth/magic-link/send
 //
-// appUUID must be the target app's UUID. The legacy `app` / `appName`
-// slug fields are no longer accepted by the backend.
-func (c *Client) SendMagicLink(ctx context.Context, appUUID, email string, opts *SendMagicLinkOptions) (*MagicLinkSend, error) {
-	body := map[string]any{"app_uuid": appUUID, "email": email}
+// email is required. opts may carry the optional AppUUID, RedirectTo and
+// OrgUUID fields and may be nil for the simplest first-party send.
+//
+// Cross-app federation: when opts.AppUUID is set together with an
+// opts.RedirectTo whose ORIGIN is registered on that Buttrbase application
+// (its WebAuthn rp_origins or configured redirect URL), the emailed link
+// points at the app's own callback ("{redirect_to}?token=..."), so the app
+// verifies the RS256 token itself via VerifyMagicLink. Non-allowlisted or
+// non-absolute targets fall back to the Buttrbase-hosted sign-in page. Omit
+// RedirectTo for the first-party flow.
+//
+// The returned MagicLinkSend reports whether the email was Sent, the token
+// lifetime in ExpiresInSeconds, and (only in non-production dev-echo
+// environments) the raw DevToken.
+func (c *Client) SendMagicLink(ctx context.Context, email string, opts *SendMagicLinkOptions) (*MagicLinkSend, error) {
+	body := map[string]any{"email": email}
 	if opts != nil {
-		if opts.RedirectURL != "" {
-			body["redirect_to"] = opts.RedirectURL
+		if opts.AppUUID != "" {
+			body["app_uuid"] = opts.AppUUID
 		}
-		if opts.TTLSeconds != nil {
-			body["ttl_seconds"] = *opts.TTLSeconds
+		if opts.RedirectTo != "" {
+			body["redirect_to"] = opts.RedirectTo
+		}
+		if opts.OrgUUID != "" {
+			body["org_uuid"] = opts.OrgUUID
 		}
 	}
 	var out MagicLinkSend
@@ -431,7 +451,11 @@ func (c *Client) SendMagicLink(ctx context.Context, appUUID, email string, opts 
 	return &out, nil
 }
 
-// VerifyMagicLink consumes a magic-link token and returns the session.
+// VerifyMagicLink consumes a magic-link token (the "token" query parameter
+// from the emailed link) and returns the session, including a
+// JWKS-verifiable RS256 AccessToken and the signed-in User. This call is
+// anonymous and requires no Authorization header.
+//
 // POST /api/auth/magic-link/verify
 func (c *Client) VerifyMagicLink(ctx context.Context, token string) (*MagicLinkVerify, error) {
 	body := map[string]any{"token": token}
