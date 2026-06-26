@@ -413,6 +413,81 @@ _, err := client.SendSms(ctx, "+15551234567", "Hello from ButtrBase!")
 _, err = client.VerifyEmailIdentity(ctx, "user@example.com")
 ```
 
+## Token Verification (JWKS / RS256)
+
+The `Verifier` performs full RS256 signature verification against the Buttrbase
+JWKS endpoint. Use it in server-side middleware to authenticate incoming
+requests — it is the Go mirror of the Rust SDK's `Verifier`.
+
+### Construction
+
+```go
+import buttrbase "github.com/buttrbase/buttrbase-sdk-go"
+
+// Construct once at startup; share across handlers (safe for concurrent use).
+v, err := buttrbase.NewVerifier(buttrbase.VerifierConfig{
+    JWKSURL:  "https://auth.buttrbase.com/.well-known/jwks.json",
+    Issuer:   "https://auth.buttrbase.com",
+    // Audience: "my-service", // optional; omit to skip aud validation
+})
+if err != nil {
+    log.Fatalf("create verifier: %v", err)
+}
+```
+
+Use `NewVerifierCtx` to bind the JWKS refresh goroutine to a context lifetime:
+
+```go
+v, err := buttrbase.NewVerifierCtx(ctx, cfg)
+```
+
+### Verify a raw token
+
+```go
+claims, err := v.VerifyToken(accessToken)
+if err != nil {
+    // bad signature / expired / wrong issuer / wrong audience → reject
+    return err
+}
+
+fmt.Println(claims.Sub)     // subject UUID
+fmt.Println(claims.Org)     // org UUID
+fmt.Println(claims.Scope)   // []string of OAuth2 scopes
+if claims.Data != nil && claims.Data.Email != nil {
+    fmt.Println(*claims.Data.Email)
+}
+
+// Convert to AuthContext for pre-split roles + email:
+auth := claims.AuthContext()
+fmt.Println(auth.Roles)     // []string split from data.roles
+fmt.Println(auth.Email)     // *string from data.email
+```
+
+### Verify a Bearer header (HTTP middleware)
+
+```go
+func AuthMiddleware(v *buttrbase.Verifier, next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        auth, err := v.VerifyBearer(r.Header.Get("Authorization"))
+        if err != nil {
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
+            return
+        }
+        // auth.UserID, auth.OrgID, auth.Roles, auth.Scopes, auth.Email
+        ctx := context.WithValue(r.Context(), authKey{}, auth)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+### Audience validation
+
+`Audience` is **optional**. Buttrbase access tokens do not always carry a
+stable `aud` claim (magic-link tokens set `aud` to the org name; client-
+credential tokens omit it). Leave it empty to rely on issuer + RS256 signature
++ `org`/`sub` claims alone. Set it only when your tokens carry a known,
+fixed audience.
+
 ## Webhook Verification
 
 ```go

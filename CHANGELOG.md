@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — JWKS verifier (mirrors Rust SDK Verifier)
+
+Adds real RS256 signature verification on top of the existing claim structs.
+No existing types or method signatures changed.
+
+### Added
+- `VerifierConfig` — `{ JWKSURL, Issuer, Audience string }`. `Audience` is
+  optional; leave empty to skip `aud` validation (mirrors Rust SDK's
+  `VerifierConfig.audience: Option<String>`).
+- `Verifier` — owns a live JWKS cache backed by
+  `MicahParks/keyfunc` + `MicahParks/jwkset`. Safe for concurrent use.
+- `NewVerifier(cfg VerifierConfig) (*Verifier, error)` — constructs a Verifier
+  with a background JWKS refresh goroutine running until process exit.
+- `NewVerifierCtx(ctx context.Context, cfg VerifierConfig) (*Verifier, error)`
+  — same, but the refresh goroutine stops when ctx is cancelled.
+- `(*Verifier).VerifyToken(token string) (*TokenClaims, error)` — verifies an
+  RS256 JWT against the JWKS (kid → fetch/cache → validate), checks issuer and
+  optionally audience, returns the enriched `TokenClaims` (including
+  `data.roles`/`data.email`). Mirrors `Verifier::verify` in the Rust SDK.
+- `(*Verifier).VerifyBearer(authHeader string) (*AuthContext, error)` — strips
+  `"Bearer "`, calls `VerifyToken`, returns an `AuthContext` via the existing
+  `TokenClaims.AuthContext()` method. Mirrors `Verifier::verify_bearer` in the
+  Rust SDK.
+- `(*Verifier).Issuer() string` and `(*Verifier).Audience() string` — read-only
+  accessors for diagnostics.
+
+### Dependencies added
+- `github.com/golang-jwt/jwt/v5 v5.3.1`
+- `github.com/MicahParks/keyfunc/v3 v3.8.0`
+- `github.com/MicahParks/jwkset v0.11.0` (transitive)
+- `golang.org/x/time v0.9.0` (transitive)
+
+### Design note
+`jwt.ParseWithClaims` requires its claims struct to implement `jwt.Claims`
+(six getter methods). Rather than alter the public `TokenClaims` struct — which
+has `exp int64` / `iat int64` conflicting with `jwt.RegisteredClaims`'s
+`*NumericDate` fields — an unexported `jwtClaims` wrapper embeds
+`jwt.RegisteredClaims` plus the buttrbase-specific fields. After parsing,
+`jwtClaims.toTokenClaims()` converts to the public `TokenClaims` so callers
+see no new types.
+
+### Intended version
+`v0.7.0` — to be tagged on merge to main.
+
 ## Unreleased — token claims enrichment (mirrors Rust SDK 0.6.0)
 
 Additively exposes the buttrbase `data` envelope carried inside access-token
