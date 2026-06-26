@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — token claims enrichment (mirrors Rust SDK 0.6.0)
+
+Additively exposes the buttrbase `data` envelope carried inside access-token
+JWTs. No existing types or method signatures changed.
+
+### Added
+- `TokenClaimsData` — struct representing the `data` object inside a
+  buttrbase JWT (`roles`, `email`, `org_uuid`, `user_uuid`; all optional).
+- `TokenClaims` — the full JWT payload (`sub`, `org`, `exp`, `iat`, `scope`,
+  optional `data`), returned by `ParseTokenClaims`.
+- `AuthContext` — the derived principal (`UserID`, `OrgID`, `Scopes`,
+  `Roles []string`, `Email *string`).
+- `(TokenClaims).AuthContext()` — converts `TokenClaims` to `AuthContext`,
+  splitting `data.roles` (comma/space-delimited string) into a `[]string`
+  slice and forwarding `data.email`.
+- `ParseTokenClaims(tokenString string) (TokenClaims, error)` — decodes the
+  JWT payload (base64url only; **does not verify the signature**). Always
+  verify against the Buttrbase JWKS before trusting claims in a security
+  context.
+
+### Intended version
+`v0.6.0` — to be tagged on merge to main.
+
 ## Unreleased — static API-key removal
 
 Static API-key auth is retired. OAuth2 client-credentials (`client_id` +
