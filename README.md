@@ -338,19 +338,118 @@ for _, row := range rows {
 
 ## Entitlements
 
+The canonical typed methods mirror the Rust SDK exactly (typed body +
+typed response). The legacy `map[string]any` overloads are preserved for
+backward compatibility.
+
 ```go
-check, err := client.EntitlementsCheck(ctx, "advanced-analytics", "org-uuid")
-effective, err := client.EntitlementsEffective(ctx)
+// Canonical (typed) — mirrors Rust SDK check_entitlement / check_entitlements
+result, err := client.CheckEntitlementTyped(ctx, "advanced_analytics")
+if result.Granted { /* allow */ }
+
+batch, err := client.BatchCheckEntitlementsTyped(ctx, []string{"feature_a", "feature_b"})
+fmt.Println(batch["feature_a"].Granted)
+
+all, err := client.GetEffectiveEntitlementsTyped(ctx)
+for _, e := range all {
+    fmt.Println(e.FeatureKey, e.Granted)
+}
+```
+
+## Wallet & Subscriptions
+
+```go
+// Wallet balance
+wallet, err := client.Wallet(ctx)
+fmt.Printf("balance: %d cents\n", wallet.BalanceCents)
+
+// Wallet transaction history (paginated)
+txns, err := client.WalletTransactions(ctx, 50, 0) // limit=50, offset=0
+for _, t := range txns {
+    fmt.Println(t.Kind, t.AmountCents)
+}
+
+// Subscriptions
+subs, err := client.Subscriptions(ctx)
+sub, err := client.CreateSubscription(ctx, buttrbase.CreateSubscriptionRequest{PriceID: 42})
+err = client.CancelSubscription(ctx, sub.ID)
+```
+
+## Pricing (typed)
+
+```go
+// Typed pricing — mirrors Rust SDK PricingPreviewRequest
+coupon := "SAVE10"
+preview, err := client.PricingPreviewTyped(ctx, buttrbase.PricingPreviewRequest{
+    PriceID:    1,
+    CouponCode: &coupon,
+})
+fmt.Printf("final: %d %s\n", preview.FinalCents, preview.Currency)
+
+quote, err := client.PricingQuoteTyped(ctx, buttrbase.PricingPreviewRequest{PriceID: 1})
+
+quoteID := quote["quote_id"].(string)
+session, err := client.CheckoutSessionTyped(ctx, buttrbase.CheckoutSessionTypedRequest{
+    PriceID: 1,
+    QuoteID: &quoteID,
+})
+fmt.Println(session.PaymentURL)
+```
+
+## Usage reporting
+
+```go
+// Report metered usage (app-level; uses bearer token)
+err := client.ReportUsage(ctx, buttrbase.UsageEvent{
+    Metric:   "api_calls",
+    Quantity: 1.0,
+})
+
+// With optional fields
+orgUUID := "org-uuid-1"
+err = client.ReportUsage(ctx, buttrbase.UsageEvent{
+    Metric:   "storage_gb",
+    Quantity: 2.5,
+    OrgUUID:  &orgUUID,
+})
+```
+
+## Token refresh
+
+```go
+// Exchange a refresh token for a new access token; also updates client.AccessToken
+newTok, err := client.RefreshToken(ctx, refreshToken)
+fmt.Println(newTok.Token) // new access token
 ```
 
 ## Teams
 
 ```go
-team, err := client.CreateTeam(ctx, map[string]any{"name": "Engineering"})
-teams, err := client.ListOrgTeams(ctx, "org-uuid")
-members, err := client.ListTeamMembers(ctx, "team-uuid")
-_, err = client.AddTeamMember(ctx, "team-uuid", "user-uuid")
-err = client.RemoveTeamMember(ctx, "team-uuid", "user-uuid")
+// List teams in an org (mirrors Rust SDK org_teams)
+teams, err := client.OrgTeams(ctx, "org-uuid")
+
+// List teams a user belongs to (mirrors Rust SDK user_teams)
+myTeams, err := client.UserTeams(ctx, "user-uuid")
+```
+
+## App management
+
+```go
+// Apps the authenticated user belongs to
+apps, err := client.MyApps(ctx)
+
+// Orgs within an app
+orgs, err := client.AppOrgs(ctx, "app-uuid")
+
+// Credential info (admin only)
+creds, err := client.AppCredentials(ctx, "app-uuid")
+fmt.Println(creds.SandboxEnabled, creds.Live.ClientID)
+
+// Enable sandbox mode
+err = client.EnableSandbox(ctx, "app-uuid")
+
+// Rotate credentials for an environment ("live" or "sandbox")
+result, err := client.RotateCredentials(ctx, "app-uuid", "live")
 ```
 
 ## Admin: Signing Keys

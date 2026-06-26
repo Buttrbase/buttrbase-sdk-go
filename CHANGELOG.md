@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased — commerce/management parity with Rust SDK
+
+Closes all hard-missing Go gaps identified in the 2026-06-26 parity audit.
+No existing exported methods or types were changed or removed.
+
+### Added — Wallet
+- `Wallet(ctx) (*WalletSummary, error)` — GET /api/wallet. Mirrors Rust SDK `wallet(bearer)`.
+- `WalletTransactions(ctx, limit, offset uint32) ([]WalletTransaction, error)` — GET /api/wallet/transactions. Mirrors Rust SDK `wallet_transactions(bearer, limit, offset)`.
+- New types: `WalletSummary`, `WalletTransaction`.
+
+### Added — Subscriptions
+- `Subscriptions(ctx) ([]SubscriptionItem, error)` — GET /api/subscriptions.
+- `CreateSubscription(ctx, CreateSubscriptionRequest) (*SubscriptionItem, error)` — POST /api/subscriptions.
+- `CancelSubscription(ctx, subscriptionID int) error` — DELETE /api/subscriptions/{id}.
+- New types: `SubscriptionItem`, `CreateSubscriptionRequest`.
+
+### Added — Usage
+- `ReportUsage(ctx, UsageEvent) error` — POST /api/usage/report. Mirrors Rust SDK `report_usage`. Uses bearer auth (vs Rust SDK's HTTP Basic; see parity report).
+- New type: `UsageEvent` (metric, quantity, org_uuid?, app_uuid?, timestamp?).
+
+### Added — Teams
+- `OrgTeams(ctx, orgUUID string) ([]TeamItem, error)` — GET /api/organizations/{orgUUID}/teams.
+- `UserTeams(ctx, userUUID string) ([]TeamItem, error)` — GET /api/users/{userUUID}/teams.
+- New type: `TeamItem` (id, team_uuid, org_uuid, name, description?).
+
+### Added — App management
+- `MyApps(ctx) ([]AppEntry, error)` — GET /api/me/apps.
+- `AppOrgs(ctx, appUUID string) ([]OrgEntry, error)` — GET /api/apps/{appUUID}/organizations.
+- `AppCredentials(ctx, appUUID string) (*AppCredentialsResponse, error)` — GET /api/apps/{appUUID}/credentials.
+- `EnableSandbox(ctx, appUUID string) error` — PATCH /api/apps/{appUUID} with body {sandbox_enabled: true}.
+- `RotateCredentials(ctx, appUUID, environment string) (map[string]any, error)` — POST /api/apps/{appUUID}/credentials/{env}/rotate.
+- New types: `AppEntry`, `OrgEntry`, `AppCredentialInfo`, `AppCredentialsResponse`.
+
+### Added — Auth
+- `RefreshToken(ctx, refreshToken string) (*AccessToken, error)` — POST /api/app/auth/refresh. Also updates `Client.AccessToken` on success. New type: `AccessToken`.
+
+### Added — Typed shapes (shape divergences resolved, old methods preserved)
+- `CheckEntitlementTyped(ctx, featureKey string) (*EntitlementResult, error)` — canonical `feature_key` body + typed response. Old `CheckEntitlement(ctx, map[string]any)` is unchanged.
+- `BatchCheckEntitlementsTyped(ctx, featureKeys []string) (map[string]EntitlementResult, error)` — canonical `feature_keys` body + `map[string]EntitlementResult` response. Routes to `/api/entitlements/check/batch`. Old `BatchCheckEntitlements(ctx, map[string]any)` is unchanged.
+- `GetEffectiveEntitlementsTyped(ctx) ([]EffectiveEntitlement, error)` — typed `[]EffectiveEntitlement` slice. Old `GetEffectiveEntitlements(ctx, map[string]string)` is unchanged.
+- `PricingPreviewTyped(ctx, PricingPreviewRequest) (*PricingPreviewResponse, error)` — typed request. Old `PricingPreview(ctx, map[string]any)` is unchanged.
+- `PricingQuoteTyped(ctx, PricingPreviewRequest) (map[string]any, error)` — typed request. Old `PricingQuote(ctx, map[string]any)` is unchanged.
+- `CheckoutSessionTyped(ctx, CheckoutSessionTypedRequest) (*CheckoutSessionResponse, error)` — typed request + typed response. Old `PricingCheckoutSession(ctx, map[string]any)` is unchanged.
+- New types: `EntitlementResult`, `EffectiveEntitlement`, `PricingPreviewRequest`, `PricingPreviewResponse`, `CheckoutSessionTypedRequest`, `CheckoutSessionResponse`.
+
+### Design notes
+- `ReportUsage` uses bearer auth. The Rust SDK uses HTTP Basic (client_id:client_secret) for this endpoint. The Go client model is OAuth2 client-credentials bearer-first; callers using `WithClientCredentials` attach the right token automatically. The endpoint accepts both auth models.
+- `TeamItem` is a new typed struct in `commerce.go`; it does not collide with the existing untyped `Team` in `types.go` (different name).
+- All new `{"data": ...}` unwrapping uses private envelope types (not exported).
+
+### Intended version
+`v0.8.0` — to be tagged on merge to main.
+
+---
+
 ## Unreleased — JWKS verifier (mirrors Rust SDK Verifier)
 
 Adds real RS256 signature verification on top of the existing claim structs.
