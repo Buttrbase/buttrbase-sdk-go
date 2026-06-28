@@ -1952,10 +1952,12 @@ func (c *Client) FinalizeRegistration(ctx context.Context, req FinalizeRegistrat
 	return &out, nil
 }
 
-// CreateInvitation creates an org invitation (app-level auth).
+// CreateInvitationV1 creates an org invitation via the legacy v1 path (app-level auth).
 // POST /api/v1/organizations/{orgUUID}/invitations
 // The plaintext Token in the response is shown once.
-func (c *Client) CreateInvitation(ctx context.Context, orgUUID uuid.UUID, req CreateInvitationRequest) (*InvitationResponse, error) {
+//
+// Deprecated: use CreateInvitation instead (canonical /api/organizations path).
+func (c *Client) CreateInvitationV1(ctx context.Context, orgUUID uuid.UUID, req CreateInvitationRequest) (*InvitationResponse, error) {
 	var out InvitationResponse
 	path := fmt.Sprintf("/api/v1/organizations/%s/invitations", orgUUID)
 	if err := c.do(ctx, http.MethodPost, path, req, true, &out); err != nil {
@@ -1964,9 +1966,12 @@ func (c *Client) CreateInvitation(ctx context.Context, orgUUID uuid.UUID, req Cr
 	return &out, nil
 }
 
-// PreviewInvitation fetches a public invitation preview by token (no auth).
+// PreviewInvitationV1 fetches a public invitation preview by token via the
+// legacy v1 path (no auth).
 // GET /api/v1/invitations/{token}/preview
-func (c *Client) PreviewInvitation(ctx context.Context, token string) (*InvitationPreview, error) {
+//
+// Deprecated: use PreviewInvitation instead (canonical /api/auth/invitations path).
+func (c *Client) PreviewInvitationV1(ctx context.Context, token string) (*InvitationPreview, error) {
 	var out InvitationPreview
 	path := fmt.Sprintf("/api/v1/invitations/%s/preview", url.PathEscape(token))
 	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
@@ -1975,10 +1980,13 @@ func (c *Client) PreviewInvitation(ctx context.Context, token string) (*Invitati
 	return &out, nil
 }
 
-// AcceptInvitation accepts an org invitation for an already-authenticated user.
+// AcceptInvitationV1 accepts an org invitation for an already-authenticated
+// user via the legacy v1 path.
 // POST /api/v1/invitations/{token}/accept
 // Brand-new users should use FinalizeRegistration with OrgChoice.AcceptInvite instead.
-func (c *Client) AcceptInvitation(ctx context.Context, token string) (*AcceptInvitationResponse, error) {
+//
+// Deprecated: use AcceptInvitation instead (canonical /api/auth/invitations path).
+func (c *Client) AcceptInvitationV1(ctx context.Context, token string) (*AcceptInvitationResponse, error) {
 	var out AcceptInvitationResponse
 	path := fmt.Sprintf("/api/v1/invitations/%s/accept", url.PathEscape(token))
 	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
@@ -1987,9 +1995,11 @@ func (c *Client) AcceptInvitation(ctx context.Context, token string) (*AcceptInv
 	return &out, nil
 }
 
-// ListInvitations lists all invitations for an org.
+// ListInvitationsV1 lists all invitations for an org via the legacy v1 path.
 // GET /api/v1/organizations/{orgUUID}/invitations
-func (c *Client) ListInvitations(ctx context.Context, orgUUID uuid.UUID) ([]InvitationListItem, error) {
+//
+// Deprecated: use ListInvitations instead (canonical /api/organizations path).
+func (c *Client) ListInvitationsV1(ctx context.Context, orgUUID uuid.UUID) ([]InvitationListItem, error) {
 	var out []InvitationListItem
 	path := fmt.Sprintf("/api/v1/organizations/%s/invitations", orgUUID)
 	if err := c.do(ctx, http.MethodGet, path, nil, true, &out); err != nil {
@@ -1998,11 +2008,75 @@ func (c *Client) ListInvitations(ctx context.Context, orgUUID uuid.UUID) ([]Invi
 	return out, nil
 }
 
-// RevokeInvitation revokes a pending invitation by its integer ID.
+// RevokeInvitationV1 revokes a pending invitation by its integer ID via the
+// legacy v1 path.
 // DELETE /api/v1/organizations/{orgUUID}/invitations/{invitationID}
-func (c *Client) RevokeInvitation(ctx context.Context, orgUUID uuid.UUID, invitationID int) error {
+//
+// Deprecated: use RevokeInvitation instead (canonical /api/organizations path).
+func (c *Client) RevokeInvitationV1(ctx context.Context, orgUUID uuid.UUID, invitationID int) error {
 	path := fmt.Sprintf("/api/v1/organizations/%s/invitations/%d", orgUUID, invitationID)
 	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+// ===== Org invitations (canonical /api/organizations paths) =====
+
+// CreateInvitation creates an org invitation at the canonical organizations
+// path. The plaintext Token in the response is returned once. Requires auth.
+//
+// POST /api/organizations/{orgUuid}/invitations
+func (c *Client) CreateInvitation(ctx context.Context, orgUuid string, req OrgInvitationRequest) (*OrgInvitation, error) {
+	path := "/api/organizations/" + url.PathEscape(orgUuid) + "/invitations"
+	var env orgInvitationEnvelope
+	if err := c.do(ctx, http.MethodPost, path, req, true, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// ListInvitations returns all invitations for the org. Requires auth.
+//
+// GET /api/organizations/{orgUuid}/invitations
+func (c *Client) ListInvitations(ctx context.Context, orgUuid string) ([]OrgInvitation, error) {
+	path := "/api/organizations/" + url.PathEscape(orgUuid) + "/invitations"
+	var env orgInvitationListEnvelope
+	if err := c.do(ctx, http.MethodGet, path, nil, true, &env); err != nil {
+		return nil, err
+	}
+	return env.Data, nil
+}
+
+// RevokeInvitation revokes a pending invitation by its ID. Requires auth.
+//
+// DELETE /api/organizations/{orgUuid}/invitations/{invitationId}
+func (c *Client) RevokeInvitation(ctx context.Context, orgUuid, invitationId string) error {
+	path := "/api/organizations/" + url.PathEscape(orgUuid) + "/invitations/" + url.PathEscape(invitationId)
+	return c.do(ctx, http.MethodDelete, path, nil, true, nil)
+}
+
+// PreviewInvitation fetches a public invitation preview by token. No auth.
+//
+// GET /api/auth/invitations/{token}
+func (c *Client) PreviewInvitation(ctx context.Context, token string) (*OrgInvitationPreview, error) {
+	path := "/api/auth/invitations/" + url.PathEscape(token)
+	var out OrgInvitationPreview
+	if err := c.do(ctx, http.MethodGet, path, nil, false, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AcceptInvitation accepts an org invitation for an already-authenticated
+// user. Brand-new users should use FinalizeRegistration with
+// OrgChoice.AcceptInvite instead. Requires auth.
+//
+// POST /api/auth/invitations/{token}/accept
+func (c *Client) AcceptInvitation(ctx context.Context, token string) (*OrgInvitationAccept, error) {
+	path := "/api/auth/invitations/" + url.PathEscape(token) + "/accept"
+	var out OrgInvitationAccept
+	if err := c.do(ctx, http.MethodPost, path, nil, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) GetSuperuserFlag(ctx context.Context, email string) (*SuperuserResponse, error) {

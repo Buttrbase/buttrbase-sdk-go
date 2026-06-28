@@ -1043,3 +1043,56 @@ type InvitationListItem struct {
 	AcceptedAt *string `json:"accepted_at,omitempty"`
 	RevokedAt  *string `json:"revoked_at,omitempty"`
 }
+
+// ----- Org invitation management (canonical /api/organizations paths) -----
+
+// OrgInvitationRequest is the body for CreateOrgInvitation.
+// All fields are optional: omit email for an open link, omit role to use
+// the org default, omit expires_in_hours to use the server default.
+type OrgInvitationRequest struct {
+	Email          string `json:"email,omitempty"`
+	Role           string `json:"role,omitempty"`
+	ExpiresInHours *int64 `json:"expires_in_hours,omitempty"`
+}
+
+// OrgInvitation is the resource returned by CreateOrgInvitation and unwrapped
+// from the {"data": ...} envelope.
+type OrgInvitation struct {
+	ID        int64   `json:"id"`
+	OrgUUID   string  `json:"org_uuid"`
+	Email     *string `json:"email,omitempty"`
+	Role      string  `json:"role"`
+	ExpiresAt string  `json:"expires_at"`
+	Token     string  `json:"token"`
+	SignupURL string  `json:"signup_url"`
+}
+
+// orgInvitationEnvelope is the {"data": ...} shape the backend returns for
+// single-invitation endpoints. Kept private; callers receive *OrgInvitation.
+type orgInvitationEnvelope struct {
+	Data OrgInvitation `json:"data"`
+}
+
+// orgInvitationListEnvelope is the {"data": [...]} shape for the list endpoint.
+type orgInvitationListEnvelope struct {
+	Data []OrgInvitation `json:"data"`
+}
+
+// OrgInvitationPreview is the public preview returned by PreviewOrgInvitation.
+// No auth required.
+type OrgInvitationPreview struct {
+	OrgUUID       string  `json:"org_uuid"`
+	OrgName       string  `json:"org_name"`
+	Email         *string `json:"email,omitempty"`
+	Role          string  `json:"role"`
+	ExpiresAt     string  `json:"expires_at"`
+	Valid         bool    `json:"valid"`
+	InvalidReason *string `json:"invalid_reason,omitempty"`
+}
+
+// OrgInvitationAccept is the response from AcceptOrgInvitation.
+type OrgInvitationAccept struct {
+	OrgUUID string `json:"org_uuid"`
+	OrgName string `json:"org_name"`
+	Role    string `json:"role"`
+}

@@ -1598,6 +1598,194 @@ func TestGetClientIP_Error(t *testing.T) {
 	}
 }
 
+// ---- CreateInvitation ----
+
+func TestCreateInvitation_HappyPath(t *testing.T) {
+	email := "member@example.com"
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		assertPath(t, r, "/api/organizations/org-abc/invitations")
+		assertAuth(t, r)
+		var body OrgInvitationRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Email != email {
+			t.Errorf("expected email %q, got %q", email, body.Email)
+		}
+		writeJSON(w, 201, map[string]any{
+			"data": OrgInvitation{
+				ID:        1,
+				OrgUUID:   "org-abc",
+				Email:     &email,
+				Role:      "member",
+				ExpiresAt: "2026-07-01T00:00:00Z",
+				Token:     "inv-tok-abc",
+				SignupURL: "https://example.com/signup?token=inv-tok-abc",
+			},
+		})
+	})
+	hrs := int64(48)
+	req := OrgInvitationRequest{Email: email, Role: "member", ExpiresInHours: &hrs}
+	res, err := c.CreateInvitation(context.Background(), "org-abc", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Token != "inv-tok-abc" {
+		t.Errorf("expected token inv-tok-abc, got %q", res.Token)
+	}
+	if res.SignupURL == "" {
+		t.Error("expected non-empty signup_url")
+	}
+}
+
+func TestCreateInvitation_Error(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 422, map[string]any{"detail": "invalid email"})
+	})
+	_, err := c.CreateInvitation(context.Background(), "org-abc", OrgInvitationRequest{Email: "bad"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---- ListInvitations ----
+
+func TestListInvitations_HappyPath(t *testing.T) {
+	email := "a@example.com"
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		assertPath(t, r, "/api/organizations/org-abc/invitations")
+		assertAuth(t, r)
+		writeJSON(w, 200, map[string]any{
+			"data": []OrgInvitation{
+				{ID: 1, OrgUUID: "org-abc", Email: &email, Role: "member", ExpiresAt: "2026-07-01T00:00:00Z", Token: "t1", SignupURL: "https://x"},
+				{ID: 2, OrgUUID: "org-abc", Role: "admin", ExpiresAt: "2026-07-02T00:00:00Z", Token: "t2", SignupURL: "https://y"},
+			},
+		})
+	})
+	res, err := c.ListInvitations(context.Background(), "org-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 2 {
+		t.Errorf("expected 2 invitations, got %d", len(res))
+	}
+	if res[0].Token != "t1" {
+		t.Errorf("expected t1, got %q", res[0].Token)
+	}
+}
+
+func TestListInvitations_Error(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 403, map[string]any{"detail": "forbidden"})
+	})
+	_, err := c.ListInvitations(context.Background(), "org-abc")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---- RevokeInvitation ----
+
+func TestRevokeInvitation_HappyPath(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodDelete)
+		assertPath(t, r, "/api/organizations/org-abc/invitations/42")
+		assertAuth(t, r)
+		w.WriteHeader(204)
+	})
+	err := c.RevokeInvitation(context.Background(), "org-abc", "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRevokeInvitation_Error(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 404, map[string]any{"detail": "invitation not found"})
+	})
+	err := c.RevokeInvitation(context.Background(), "org-abc", "999")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---- PreviewInvitation ----
+
+func TestPreviewInvitation_HappyPath(t *testing.T) {
+	email := "member@example.com"
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		assertPath(t, r, "/api/auth/invitations/my-token")
+		// No auth — this is public
+		if r.Header.Get("Authorization") != "" {
+			t.Error("expected no Authorization header on public endpoint")
+		}
+		writeJSON(w, 200, OrgInvitationPreview{
+			OrgUUID:   "org-abc",
+			OrgName:   "Acme Corp",
+			Email:     &email,
+			Role:      "member",
+			ExpiresAt: "2026-07-01T00:00:00Z",
+			Valid:      true,
+		})
+	})
+	res, err := c.PreviewInvitation(context.Background(), "my-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Valid {
+		t.Error("expected valid=true")
+	}
+	if res.OrgName != "Acme Corp" {
+		t.Errorf("expected org name 'Acme Corp', got %q", res.OrgName)
+	}
+}
+
+func TestPreviewInvitation_Error(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 404, map[string]any{"detail": "invitation not found"})
+	})
+	_, err := c.PreviewInvitation(context.Background(), "bad-token")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---- AcceptInvitation ----
+
+func TestAcceptInvitation_HappyPath(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		assertPath(t, r, "/api/auth/invitations/my-token/accept")
+		assertAuth(t, r)
+		writeJSON(w, 200, OrgInvitationAccept{
+			OrgUUID: "org-abc",
+			OrgName: "Acme Corp",
+			Role:    "member",
+		})
+	})
+	res, err := c.AcceptInvitation(context.Background(), "my-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OrgUUID != "org-abc" {
+		t.Errorf("expected org-abc, got %q", res.OrgUUID)
+	}
+	if res.Role != "member" {
+		t.Errorf("expected member, got %q", res.Role)
+	}
+}
+
+func TestAcceptInvitation_Error(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 410, map[string]any{"detail": "invitation expired"})
+	})
+	_, err := c.AcceptInvitation(context.Background(), "expired-token")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 // ---- do — additional edge case branches ----
 
 // Test the http.NewRequestWithContext failure branch by using an invalid URL.
